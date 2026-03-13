@@ -1,0 +1,106 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "COW Shed",
+  "projectDescription": "A gas-efficient, address-bound account abstraction for permissioned hooks on CoW Protocol",
+  "theme": "aspen",
+  "primaryColor": "#22bd7a",
+  "lightColor": "#0f0d51",
+  "darkColor": "#cee1df",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Getting Started",
+            "pages": [
+              "getting-started/quickstart",
+              "getting-started/integration"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/hooks",
+              "concepts/signatures",
+              "concepts/nonces",
+              "concepts/presigning"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/networks",
+              "deployment/deploy-guide",
+              "deployment/verification"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/overview",
+              "examples/mint-dai-swap",
+              "examples/swap-bridge",
+              "examples/claim-swap"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Contracts",
+            "pages": [
+              "api/cowshed",
+              "api/cowshed-factory",
+              "api/cowshed-proxy",
+              "api/icowauthhook"
+            ]
+          },
+          {
+            "group": "Libraries",
+            "pages": [
+              "api/lib-authenticated-hooks",
+              "api/lib-cow-order"
+            ]
+          },
+          {
+            "group": "Storage",
+            "pages": [
+              "api/presign-storage"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Deterministic proxy deployment using CREATE2",
+    "EIP-712 signed hooks with nonce management",
+    "Support for both EOA and smart contract wallets (EIP-1271)",
+    "Pre-signing functionality for on-chain authorization",
+    "Gas-efficient bitmap-based nonce tracking",
+    "Multi-chain deployment with consistent addresses"
+  ],
+  "publicApiSurface": [
+    "COWShed.executeHooks",
+    "COWShed.executePreSignedHooks",
+    "COWShed.preSignHooks",
+    "COWShed.trustedExecuteHooks",
+    "COWShed.updateTrustedExecutor",
+    "COWShed.revokeNonce",
+    "COWShedFactory.executeHooks",
+    "COWShedFactory.initializeProxy",
+    "COWShedFactory.proxyOf",
+    "LibAuthenticatedHooks.authenticateHooks",
+    "LibAuthenticatedHooks.executeHooksMessageHash"
+  ]
+}

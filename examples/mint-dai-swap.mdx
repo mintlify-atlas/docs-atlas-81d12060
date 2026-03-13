@@ -1,0 +1,319 @@
+---
+title: Mint DAI and Swap
+description: Learn how to use pre-hooks to JIT borrow DAI from Maker protocol before swapping to COW
+---
+
+## Overview
+
+This example demonstrates **just-in-time (JIT) borrowing** using pre-hooks. The user deposits ETH collateral into Maker protocol, then uses pre-hooks to borrow DAI right before swapping it to COW tokens.
+
+## Use Case
+
+**Problem**: You have ETH collateral in Maker but want to swap DAI to another token without manual steps.
+
+**Solution**: Use COW Shed pre-hooks to:
+1. Create a Maker CDP (Collateralized Debt Position)
+2. Mint DAI from the CDP
+3. Automatically swap the borrowed DAI to COW
+
+All in a single transaction flow!
+
+## Key Concepts
+
+### Pre-Hooks for JIT Operations
+
+Pre-hooks execute **before** the swap, allowing you to:
+- Borrow or mint tokens needed for the swap
+- Claim tokens from other protocols
+- Perform any setup required for the swap to succeed
+
+### Maker Protocol Integration
+
+The example interacts with Maker's core contracts:
+- **VAT**: Maker's core accounting system
+- **ETH_A_JOIN**: Collateral adapter for WETH
+- **DAI_JOIN**: DAI token adapter
+
+## Implementation
+
+### Step 1: Initialize SDK and Setup
+
+```typescript
+import { CowShedSdk, ICall } from '@cowprotocol/cow-shed';
+import { ethers } from 'ethers';
+
+const shedSdk = new CowShedSdk({
+  factoryAddress: factory,
+  implementationAddress: implementation,
+  proxyCreationCode: proxyInitCode,
+  chainId: 1,
+});
+
+const user = signers[1];
+const collateral = ethers.parseEther('10'); // 10 ETH collateral
+const daiDebt = ethers.parseEther('8000');  // Borrow 8000 DAI
+
+// Compute the deterministic proxy address
+const proxyAddress = shedSdk.computeProxyAddress(user.address);
+console.log('Proxy address:', proxyAddress);
+```
+
+### Step 2: Prepare Collateral
+
+```typescript
+// Wrap ETH to WETH
+await wrapEther(provider, user.address, collateral);
+
+// Allow proxy to take actions on behalf of the user in Maker
+await vatHope(provider, user.address, proxyAddress);
+
+// Approve and deposit WETH into the collateral adapter
+await approveToken(provider, WETH, user.address, ETH_A_JOIN, collateral);
+await joinEth(provider, user.address, collateral);
+```
+
+<Note>
+`vatHope()` is crucial - it authorizes the proxy to manage your Maker position.
+</Note>
+
+### Step 3: Create the Swap Order
+
+```typescript
+const validTo = Math.floor(new Date().getTime() / 1000) + 7200; // 2 hours
+const buyAmount = ethers.parseEther('100');
+
+const order: Order = {
+  sellToken: DAI,
+  buyToken: COW,
+  receiver: user.address,
+  sellAmount: daiDebt,          // Sell all borrowed DAI
+  buyAmount,                     // Minimum COW to receive
+  validTo,
+  appData: '',
+  feeAmount: 0n,
+  kind: OrderKind.SELL,
+  partiallyFillable: true,
+  sellTokenBalance: OrderBalance.ERC20,
+  buyTokenBalance: OrderBalance.ERC20,
+};
+```
+
+### Step 4: Define Pre-Hook Calls
+
+These calls execute **before** the swap to mint the DAI:
+
+```typescript
+const ilk = await getIlk(provider, ETH_A_JOIN);
+
+const calls: ICall[] = [
+  // 1. Create CDP and draw DAI debt
+  {
+    target: VAT,
+    isDelegateCall: false,
+    value: 0n,
+    allowFailure: false,
+    callData: fnCalldata(
+      'frob(bytes32,address,address,address,int256,int256)',
+      ABI_CODER.encode(
+        ['bytes32', 'address', 'address', 'address', 'int256', 'int256'],
+        [
+          ilk,           // Collateral type (ETH-A)
+          user.address,  // Collateral source
+          user.address,  // Collateral destination
+          proxyAddress,  // Debt destination
+          collateral,    // Collateral amount
+          daiDebt        // Debt amount
+        ]
+      )
+    ),
+  },
+  // 2. Approve DAI_JOIN to move DAI from VAT
+  {
+    allowFailure: false,
+    target: VAT,
+    value: 0n,
+    isDelegateCall: false,
+    callData: fnCalldata(
+      'hope(address)',
+      ABI_CODER.encode(['address'], [DAI_JOIN])
+    ),
+  },
+  // 3. Exit DAI from VAT to user's address
+  {
+    allowFailure: false,
+    target: DAI_JOIN,
+    value: 0n,
+    isDelegateCall: false,
+    callData: fnCalldata(
+      'exit(address,uint256)',
+      ABI_CODER.encode(['address', 'uint256'], [user.address, daiDebt])
+    ),
+  },
+];
+```
+
+<Warning>
+The order of operations matters:
+1. Draw debt (`frob`)
+2. Authorize DAI_JOIN (`hope`)
+3. Exit DAI tokens (`exit`)
+</Warning>
+
+### Step 5: Sign Hook Intent
+
+Sign the hooks with EIP-712:
+
+```typescript
+const nonce = ethers.encodeBytes32String('first');
+
+// Create the hash to sign
+const hashToSign = shedSdk.hashToSignWithUser(
+  calls,
+  nonce,
+  BigInt(validTo),
+  user.address
+);
+
+// Sign with user's private key
+const signature = user.signingKey.sign(hashToSign);
+
+// Encode signature for on-chain verification
+const encodedSignature = CowShedSdk.encodeEOASignature(
+  BigInt(signature.r),
+  BigInt(signature.s),
+  signature.v
+);
+```
+
+### Step 6: Encode Hooks Calldata
+
+```typescript
+const hooksCalldata = CowShedSdk.encodeExecuteHooksForFactory(
+  calls,
+  nonce,
+  BigInt(validTo),
+  user.address,
+  encodedSignature
+);
+
+const hooks = {
+  pre: [
+    {
+      target: factory,
+      callData: hooksCalldata,
+      gasLimit: '1000000000'
+    }
+  ],
+};
+```
+
+### Step 7: Approve and Create Order
+
+```typescript
+// Approve DAI to CoW Swap's vault relayer
+await approveToken(provider, DAI, user.address, VAULT_RELAYER, daiDebt);
+
+// Create the order with hooks
+const orderTx = await createOrder(provider, order, hooks, user.address);
+console.log('Create order tx:', orderTx?.hash);
+```
+
+### Step 8: Settle the Order
+
+```typescript
+// Settle the order (executes hooks + swap)
+const settleTx = await settleOrder(provider, order, hooks, user.address);
+console.log('Settle tx:', settleTx?.hash);
+```
+
+## Execution Flow
+
+<Steps>
+  <Step title="User Preparation">
+    - Wrap ETH to WETH
+    - Deposit WETH as collateral in Maker
+    - Authorize proxy with `vatHope`
+  </Step>
+  <Step title="Order Submission">
+    - Create CoW Swap order (DAI → COW)
+    - Attach signed pre-hooks
+    - Submit to settlement contract
+  </Step>
+  <Step title="Pre-Hook Execution">
+    - Proxy is deployed (if first time)
+    - Create CDP on Maker
+    - Mint DAI to user's address
+  </Step>
+  <Step title="Swap Execution">
+    - CoW Swap transfers DAI from user
+    - Executes the swap
+    - Sends COW to user
+  </Step>
+</Steps>
+
+## Complete Example
+
+Full source code: [`examples/mintDaiAndSwap.ts`](https://github.com/cowprotocol/cow-shed/blob/main/examples/mintDaiAndSwap.ts)
+
+```bash
+# Run the example
+yarn ts-node examples/mintDaiAndSwap.ts
+```
+
+## ENS Resolution
+
+The example also demonstrates ENS integration:
+
+```typescript
+const resolvedAddress = await resolveName(
+  provider,
+  `${user.address.toLowerCase()}.cowhooks.eth`
+);
+const proxyName = await provider.lookupAddress(proxyAddress);
+
+console.log({
+  resolvedAddress,  // Should resolve to proxy
+  proxyName,        // Should be user.cowhooks.eth
+  proxyAddress,
+  userAddress: user.address,
+});
+```
+
+Each proxy gets an ENS name: `{user-address}.cowhooks.eth`
+
+## Key Takeaways
+
+<AccordionGroup>
+  <Accordion title="When to use pre-hooks">
+    - JIT borrowing or minting tokens
+    - Claiming rewards or vested tokens
+    - Any operation that must complete before the swap
+  </Accordion>
+  <Accordion title="Nonce management">
+    - Nonces prevent replay attacks
+    - Can be any bytes32 value (not sequential)
+    - Sequential nonces save gas
+    - Users manage nonce lifecycle
+  </Accordion>
+  <Accordion title="Gas considerations">
+    - First execution deploys the proxy (~100k gas)
+    - Subsequent executions are cheaper
+    - Set appropriate gas limits for hooks
+  </Accordion>
+  <Accordion title="Security">
+    - EIP-712 signatures prevent unauthorized hooks
+    - Only signed operations execute
+    - Proxy is user-owned (non-custodial)
+  </Accordion>
+</AccordionGroup>
+
+## Related Examples
+
+<CardGroup cols={2}>
+  <Card title="Swap & Bridge" icon="bridge" href="/examples/swap-bridge">
+    Learn about post-hooks and cross-chain operations
+  </Card>
+  <Card title="Claim & Swap" icon="hand-holding-dollar" href="/examples/claim-swap">
+    Another pre-hook example with Llama Pay
+  </Card>
+</CardGroup>

@@ -1,0 +1,306 @@
+---
+title: "LibAuthenticatedHooks"
+description: "Library for authenticating and executing authorized hook calls with EIP-712 signatures"
+---
+
+# LibAuthenticatedHooks
+
+The `LibAuthenticatedHooks` library provides functionality for verifying EIP-712 signatures and executing authenticated hook calls. It supports both EOA (Externally Owned Account) and smart contract signers via EIP-1271.
+
+## Constants
+
+### CALL_TYPE_HASH
+
+```solidity
+bytes32 internal constant CALL_TYPE_HASH =
+    keccak256("Call(address target,uint256 value,bytes callData,bool allowFailure,bool isDelegateCall)");
+```
+
+EIP-712 typehash for the `Call` struct used in hook execution.
+
+### EXECUTE_HOOKS_TYPE_HASH
+
+```solidity
+bytes32 internal constant EXECUTE_HOOKS_TYPE_HASH = keccak256(
+    "ExecuteHooks(Call[] calls,bytes32 nonce,uint256 deadline)Call(address target,uint256 value,bytes callData,bool allowFailure,bool isDelegateCall)"
+);
+```
+
+EIP-712 typehash for the `ExecuteHooks` message structure.
+
+### MAGIC_VALUE_1271
+
+```solidity
+bytes4 internal constant MAGIC_VALUE_1271 = 0x1626ba7e;
+```
+
+Magic value returned on successful EIP-1271 signature validation from a smart account.
+
+## Errors
+
+### InvalidSignature
+
+```solidity
+error InvalidSignature();
+```
+
+Reverts when signature validation fails or signature format is invalid (e.g., not 65 bytes for EOA).
+
+### DeadlineElapsed
+
+```solidity
+error DeadlineElapsed();
+```
+
+Reverts when the current block timestamp exceeds the message deadline.
+
+## Functions
+
+### authenticateHooks
+
+```solidity
+function authenticateHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline,
+    address user,
+    bytes calldata signature,
+    bytes32 domainSeparator
+) internal view returns (bool)
+```
+
+Verifies the deadline and signature against the executing payload. Supports both smart contract signers (via EIP-1271) and EOA signers (via ECDSA recovery).
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to be executed
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce to prevent replay attacks
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Unix timestamp after which the signature is no longer valid
+</ParamField>
+
+<ParamField path="user" type="address">
+  Address of the signer (EOA or smart contract)
+</ParamField>
+
+<ParamField path="signature" type="bytes">
+  Signature bytes (65 bytes for EOA, variable for smart contracts)
+</ParamField>
+
+<ParamField path="domainSeparator" type="bytes32">
+  EIP-712 domain separator for the current contract
+</ParamField>
+
+<ResponseField name="isAuthorized" type="bool">
+  Returns `true` if the signature is valid and deadline has not elapsed
+</ResponseField>
+
+<Note>
+  This function automatically detects whether the signer is a smart contract (code.length > 0) or an EOA, and uses the appropriate verification method.
+</Note>
+
+### verifyDeadline
+
+```solidity
+function verifyDeadline(uint256 deadline) internal view
+```
+
+Verifies that the current block timestamp has not exceeded the deadline.
+
+<ParamField path="deadline" type="uint256">
+  Unix timestamp deadline to check against
+</ParamField>
+
+Reverts with `DeadlineElapsed()` if `block.timestamp > deadline`.
+
+### hashToSign
+
+```solidity
+function hashToSign(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline,
+    bytes32 domainSeparator
+) internal pure returns (bytes32 _toSign)
+```
+
+Generates the EIP-712 hash to be signed by the user.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to be executed
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce for the message
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Unix timestamp deadline
+</ParamField>
+
+<ParamField path="domainSeparator" type="bytes32">
+  EIP-712 domain separator
+</ParamField>
+
+<ResponseField name="_toSign" type="bytes32">
+  The complete EIP-712 digest formatted as `keccak256("\x19\x01" || domainSeparator || messageHash)`
+</ResponseField>
+
+### executeHooksMessageHash
+
+```solidity
+function executeHooksMessageHash(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline
+) internal pure returns (bytes32 hash)
+```
+
+Computes the `hashStruct` encoded hash for the `ExecuteHooks` message.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to be hashed
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Nonce value
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Deadline value
+</ParamField>
+
+<ResponseField name="hash" type="bytes32">
+  The structured hash: `keccak256(EXECUTE_HOOKS_TYPE_HASH || callsHash(calls) || nonce || deadline)`
+</ResponseField>
+
+### callsHash
+
+```solidity
+function callsHash(Call[] calldata calls) internal pure returns (bytes32 _callsHash)
+```
+
+Computes the `encodeData` output for a dynamic array of calls.
+
+<ParamField path="calls" type="Call[]">
+  Array of Call structs to hash
+</ParamField>
+
+<ResponseField name="_callsHash" type="bytes32">
+  Hash of the array of individual call hashes
+</ResponseField>
+
+<Info>
+  This function iterates through all calls, computes `callHash` for each, and returns the keccak256 hash of the concatenated results.
+</Info>
+
+### callHash
+
+```solidity
+function callHash(Call calldata cll) internal pure returns (bytes32 _callHash)
+```
+
+Computes the `hashStruct` output for a single call.
+
+<ParamField path="cll" type="Call">
+  Call struct containing target, value, callData, allowFailure, and isDelegateCall fields
+</ParamField>
+
+<ResponseField name="_callHash" type="bytes32">
+  Structured hash of the call following EIP-712 encoding rules
+</ResponseField>
+
+### executeCalls
+
+```solidity
+function executeCalls(Call[] calldata calls) internal
+```
+
+Executes an array of calls, supporting both regular calls and delegate calls.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to execute
+</ParamField>
+
+<Note>
+  - If `isDelegateCall` is true, the call is executed via `delegatecall`
+  - If `isDelegateCall` is false, the call is executed via `call` with the specified value
+  - If a call fails and `allowFailure` is false, the entire transaction reverts with the original revert message
+  - If `allowFailure` is true, failed calls are silently ignored
+</Note>
+
+### decodeEOASignature
+
+```solidity
+function decodeEOASignature(bytes calldata signature)
+    internal pure
+    returns (bytes32 r, bytes32 s, uint8 v)
+```
+
+Decodes a packed EOA signature into its ECDSA components.
+
+<ParamField path="signature" type="bytes">
+  Packed signature bytes in `<r><s><v>` format (must be exactly 65 bytes)
+</ParamField>
+
+<ResponseField name="r" type="bytes32">
+  ECDSA signature parameter r
+</ResponseField>
+
+<ResponseField name="s" type="bytes32">
+  ECDSA signature parameter s
+</ResponseField>
+
+<ResponseField name="v" type="uint8">
+  ECDSA recovery id (27 or 28)
+</ResponseField>
+
+Reverts with `InvalidSignature()` if the signature is not exactly 65 bytes.
+
+## Usage Example
+
+```solidity
+import {LibAuthenticatedHooks} from "./LibAuthenticatedHooks.sol";
+import {Call} from "./ICOWAuthHook.sol";
+
+contract MyHookHandler {
+    bytes32 public immutable DOMAIN_SEPARATOR;
+    
+    function executeAuthenticatedHooks(
+        Call[] calldata calls,
+        bytes32 nonce,
+        uint256 deadline,
+        address user,
+        bytes calldata signature
+    ) external {
+        // Verify signature and deadline
+        bool isValid = LibAuthenticatedHooks.authenticateHooks(
+            calls,
+            nonce,
+            deadline,
+            user,
+            signature,
+            DOMAIN_SEPARATOR
+        );
+        
+        require(isValid, "Invalid authentication");
+        
+        // Execute the authenticated calls
+        LibAuthenticatedHooks.executeCalls(calls);
+    }
+}
+```
+
+## Implementation Notes
+
+<Info>
+  The library uses optimized assembly code for gas efficiency in hashing operations. Memory safety is maintained by saving and restoring the free memory pointer and other critical memory slots.
+</Info>
+
+<Note>
+  When using `executeCalls`, be aware that delegate calls execute in the context of the calling contract and can modify its storage. Only allow delegate calls from trusted sources.
+</Note>

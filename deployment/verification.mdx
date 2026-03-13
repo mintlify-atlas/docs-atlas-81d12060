@@ -1,0 +1,313 @@
+---
+title: 'Contract Verification'
+description: 'Guide to verifying deployed COW Shed contracts on block explorers'
+icon: 'shield-check'
+---
+
+Verifying your contracts on block explorers allows users to interact with them directly through the explorer interface and builds trust by making the source code publicly accessible.
+
+## Automatic Verification
+
+Foundry provides built-in verification for Etherscan-compatible block explorers.
+
+### Prerequisites
+
+<Steps>
+  <Step title="Obtain API Key">
+    Get an API key from your block explorer:
+    
+    - **Etherscan**: [etherscan.io/myapikey](https://etherscan.io/myapikey)
+    - **Polygonscan**: [polygonscan.com/myapikey](https://polygonscan.com/myapikey)
+    - **Arbiscan**: [arbiscan.io/myapikey](https://arbiscan.io/myapikey)
+    - **BscScan**: [bscscan.com/myapikey](https://bscscan.com/myapikey)
+    - Other explorers: Check their documentation
+    
+    <Info>
+      Most Etherscan-based explorers use the same account system. You can use one API key across multiple networks.
+    </Info>
+  </Step>
+
+  <Step title="Set Environment Variable">
+    Export your API key:
+    
+    ```bash
+    export ETHERSCAN_API_KEY="your-api-key-here"
+    ```
+  </Step>
+</Steps>
+
+### Verify Deployed Contracts
+
+Verify each contract using the `forge verify-contract` command:
+
+<CodeGroup>
+```bash COWShed
+forge verify-contract \
+  --verifier etherscan \
+  --watch \
+  --rpc-url "$RPC_URL" \
+  0x62d3a7ff48f9ae1c28a9552a055482f8c63787f8 \
+  COWShed \
+  --guess-constructor-args
+```
+
+```bash COWShedFactory
+forge verify-contract \
+  --verifier etherscan \
+  --watch \
+  --rpc-url "$RPC_URL" \
+  0x4f4350bf2c74aacd508d598a1ba94ef84378793d \
+  COWShedFactory \
+  --guess-constructor-args
+```
+
+```bash COWShedForComposableCoW
+forge verify-contract \
+  --verifier etherscan \
+  --watch \
+  --rpc-url "$RPC_URL" \
+  0x6773d5aa31a1ead34127d564d6e258e66254ebdb \
+  COWShedForComposableCoW \
+  --guess-constructor-args
+```
+</CodeGroup>
+
+<Info>
+  Replace the addresses shown above with your actual deployment addresses. The addresses shown are examples from Gnosis Chain.
+</Info>
+
+### Command Breakdown
+
+- `--verifier etherscan`: Use Etherscan API (works for most explorers)
+- `--watch`: Wait and poll for verification result
+- `--rpc-url`: RPC endpoint for the network
+- `--guess-constructor-args`: Automatically detect constructor arguments
+
+### Network-Specific Examples
+
+<CodeGroup>
+```bash Ethereum Mainnet
+export RPC_URL="https://eth-mainnet.g.alchemy.com/v2/YOUR-KEY"
+
+forge verify-contract \
+  --verifier etherscan \
+  --watch \
+  --rpc-url "$RPC_URL" \
+  0xa2704cf562ad418bf0453f4b662ebf6a2489ed88 \
+  COWShed \
+  --guess-constructor-args
+```
+
+```bash Gnosis Chain
+export RPC_URL="https://rpc.gnosischain.com"
+
+forge verify-contract \
+  --verifier etherscan \
+  --watch \
+  --rpc-url "$RPC_URL" \
+  0x62d3a7ff48f9ae1c28a9552a055482f8c63787f8 \
+  COWShed \
+  --guess-constructor-args
+```
+
+```bash Polygon
+export RPC_URL="https://polygon-rpc.com"
+
+forge verify-contract \
+  --verifier etherscan \
+  --watch \
+  --rpc-url "$RPC_URL" \
+  0xa2704cf562ad418bf0453f4b662ebf6a2489ed88 \
+  COWShed \
+  --guess-constructor-args
+```
+
+```bash Arbitrum One
+export RPC_URL="https://arb1.arbitrum.io/rpc"
+
+forge verify-contract \
+  --verifier etherscan \
+  --watch \
+  --rpc-url "$RPC_URL" \
+  0xa2704cf562ad418bf0453f4b662ebf6a2489ed88 \
+  COWShed \
+  --guess-constructor-args
+```
+</CodeGroup>
+
+## Manual Verification (Fallback Method)
+
+If automatic verification fails, you can verify manually using the Standard JSON Input method.
+
+<Steps>
+  <Step title="Generate Standard JSON Input">
+    Generate the standard JSON input files:
+    
+    ```bash
+    bash dev/generate-solc-standard-input.sh
+    ```
+    
+    This creates verification files in the `dev/standard-json-input/` directory.
+  </Step>
+
+  <Step title="Navigate to Block Explorer">
+    Visit your contract on the block explorer and click "Verify and Publish" or similar option.
+  </Step>
+
+  <Step title="Select Verification Method">
+    Choose **"Standard JSON Input"** as the verification method.
+  </Step>
+
+  <Step title="Upload JSON File">
+    Upload the corresponding JSON file from `dev/standard-json-input/`:
+    
+    - `COWShed.json` for COWShed contract
+    - `COWShedFactory.json` for COWShedFactory contract
+    - `COWShedForComposableCoW.json` for COWShedForComposableCoW contract
+  </Step>
+
+  <Step title="Configure Compiler Settings">
+    Ensure the compiler settings match:
+    
+    - **Compiler Version**: `v0.8.30`
+    - **Optimization**: Enabled
+    - **Runs**: `1000000`
+    - **EVM Version**: `prague`
+  </Step>
+
+  <Step title="Submit Verification">
+    Submit the verification and wait for the explorer to process it.
+  </Step>
+</Steps>
+
+<Warning>
+  Manual verification is more time-consuming but provides a reliable fallback when automatic verification fails.
+</Warning>
+
+## Verification for Different Block Explorers
+
+### Blockscout-Based Explorers
+
+Some networks use Blockscout instead of Etherscan. For these:
+
+```bash
+forge verify-contract \
+  --verifier blockscout \
+  --verifier-url "https://explorer.network.com/api" \
+  CONTRACT_ADDRESS \
+  CONTRACT_NAME \
+  --guess-constructor-args
+```
+
+### Sourcify
+
+For Sourcify verification:
+
+```bash
+forge verify-contract \
+  --verifier sourcify \
+  --verifier-url "https://sourcify.dev/server" \
+  CONTRACT_ADDRESS \
+  CONTRACT_NAME
+```
+
+## Troubleshooting Verification
+
+### "Already Verified"
+
+If you see "Contract already verified":
+
+- The contract may have been verified automatically during deployment
+- Check the block explorer to confirm verification status
+- No action needed if already verified
+
+### "Bytecode Mismatch"
+
+If you encounter bytecode mismatch errors:
+
+1. Verify you're using the correct compiler version (0.8.30)
+2. Check `foundry.toml` settings match the deployment configuration
+3. Ensure you compiled with the same settings:
+   ```bash
+   forge clean
+   forge build
+   ```
+4. Try manual verification with Standard JSON Input
+
+### Constructor Arguments Issues
+
+If `--guess-constructor-args` fails:
+
+1. Manually specify constructor arguments:
+   ```bash
+   forge verify-contract \
+     --verifier etherscan \
+     --constructor-args $(cast abi-encode "constructor(address)" "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74") \
+     CONTRACT_ADDRESS \
+     CONTRACT_NAME
+   ```
+
+2. For COWShedFactory, the constructor takes the COWShed address:
+   ```bash
+   cast abi-encode "constructor(address)" "0xa2704cf562ad418bf0453f4b662ebf6a2489ed88"
+   ```
+
+3. For COWShedForComposableCoW, the constructor takes the Composable CoW address:
+   ```bash
+   cast abi-encode "constructor(address)" "0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74"
+   ```
+
+### API Rate Limits
+
+If you hit API rate limits:
+
+- Wait a few minutes before retrying
+- Consider upgrading your API key plan for higher limits
+- Use the `--watch` flag to automatically poll for results
+
+### Network Not Supported
+
+For networks without Etherscan support:
+
+1. Check if the network has a custom block explorer
+2. Use Blockscout or Sourcify if available
+3. Use manual verification with Standard JSON Input
+4. Contact the network team for verification options
+
+## Verifying Multi-File Contracts
+
+COW Shed contracts import multiple files. The verification process handles this automatically:
+
+- Forge flattens all imports
+- Standard JSON Input includes all source files
+- Block explorers can display the full contract structure
+
+## Post-Verification Steps
+
+After successful verification:
+
+<Steps>
+  <Step title="Test Read Functions">
+    Visit the block explorer and try reading contract state to confirm verification.
+  </Step>
+
+  <Step title="Update Documentation">
+    Add the verified contract links to your deployment documentation.
+  </Step>
+
+  <Step title="Share Verification Links">
+    Share the verified contract links with your community and users.
+  </Step>
+</Steps>
+
+## Best Practices
+
+- Verify contracts immediately after deployment
+- Keep Standard JSON Input files in version control
+- Document verification steps for your specific networks
+- Test verification on testnets before mainnet
+- Use `--watch` flag to avoid manual polling
+
+<Info>
+  Verified contracts build trust with users and enable direct interaction through block explorers. Always verify your production deployments.
+</Info>

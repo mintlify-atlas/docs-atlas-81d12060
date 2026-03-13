@@ -1,0 +1,255 @@
+---
+title: 'Hooks'
+description: 'Understanding pre-hooks and post-hooks in COW Shed'
+---
+
+## What Are Hooks?
+
+Hooks in COW Shed are arbitrary contract calls that can be executed before or after trades on CoW Protocol. They enable powerful automation and composability, allowing you to:
+
+- Approve tokens before trading
+- Claim rewards or compound positions
+- Rebalance portfolios
+- Execute complex DeFi strategies
+- Perform any on-chain action in coordination with your trades
+
+Hooks are represented as an array of `Call` structs, each defining a single contract interaction.
+
+## The Call Struct
+
+Every hook is defined by the `Call` struct from `ICOWAuthHook.sol`:
+
+```solidity ICOWAuthHook.sol
+struct Call {
+    address target;        // Contract to call
+    uint256 value;         // ETH to send (in wei)
+    bytes callData;        // Encoded function call
+    bool allowFailure;     // Continue if this call fails
+    bool isDelegateCall;   // Execute as delegatecall
+}
+```
+
+### Field Descriptions
+
+<AccordionGroup>
+  <Accordion title="target">
+    The address of the contract you want to call. This could be a token contract, DEX, lending protocol, or any other smart contract.
+  </Accordion>
+
+  <Accordion title="value">
+    The amount of ETH (in wei) to send with the call. Set to `0` for most calls unless you're sending ETH to a payable function.
+  </Accordion>
+
+  <Accordion title="callData">
+    The ABI-encoded function call. In JavaScript/TypeScript, use `ethers.js` or `viem` to encode:
+    
+    ```typescript
+    // Using viem
+    const callData = encodeFunctionData({
+      abi: tokenAbi,
+      functionName: 'approve',
+      args: [spender, amount]
+    });
+    ```
+  </Accordion>
+
+  <Accordion title="allowFailure">
+    When `true`, execution continues even if this specific call reverts. When `false`, the entire transaction reverts if this call fails.
+    
+    <Tip>Set to `true` for optional operations like claiming rewards that might not always be available.</Tip>
+  </Accordion>
+
+  <Accordion title="isDelegateCall">
+    When `true`, executes the call using `delegatecall` instead of `call`. This runs the target contract's code in the context of your COWShed.
+    
+    <Warning>Use `delegatecall` with extreme caution. The target contract can modify your COWShed's storage and has full control. Only delegatecall to trusted contracts.</Warning>
+  </Accordion>
+</AccordionGroup>
+
+## How Hooks Are Executed
+
+The hook execution flow is implemented in `LibAuthenticatedHooks.executeCalls()`:
+
+```solidity LibAuthenticatedHooks.sol
+function executeCalls(Call[] calldata calls) internal {
+    for (uint256 i = 0; i < calls.length;) {
+        Call memory call = calls[i];
+        bool success;
+        bytes memory ret;
+        
+        if (call.isDelegateCall) {
+            (success, ret) = call.target.delegatecall(call.callData);
+        } else {
+            (success, ret) = call.target.call{value: call.value}(call.callData);
+        }
+        
+        if (!success && !call.allowFailure) {
+            // Bubble up the revert message
+            assembly ("memory-safe") {
+                revert(add(ret, 0x20), mload(ret))
+            }
+        }
+        
+        unchecked {
+            ++i;
+        }
+    }
+}
+```
+
+### Execution Behavior
+
+1. **Sequential Processing**: Calls are executed in array order (index 0, 1, 2, ...)
+2. **State Changes Persist**: Each call's state changes remain for subsequent calls
+3. **Revert Handling**: If `allowFailure` is `false` and the call fails, the original revert message is bubbled up
+4. **Gas Considerations**: Each call consumes gas; complex operations may hit gas limits
+
+## Pre-Hooks vs Post-Hooks
+
+While the `Call` struct itself doesn't distinguish between pre and post-hooks, the **position** in your workflow determines their role:
+
+<CardGroup cols={2}>
+  <Card title="Pre-Hooks" icon="arrow-right">
+    Executed **before** your trade settles on CoW Protocol
+    
+    **Common uses:**
+    - Token approvals
+    - Unwrapping tokens (WETH → ETH)
+    - Moving funds into position
+  </Card>
+  
+  <Card title="Post-Hooks" icon="arrow-left">
+    Executed **after** your trade settles on CoW Protocol
+    
+    **Common uses:**
+    - Staking received tokens
+    - Claiming rewards
+    - Wrapping tokens (ETH → WETH)
+  </Card>
+</CardGroup>
+
+<Note>
+CoW Protocol orders can specify both pre-hooks and post-hooks. The COWShed executes whichever hooks are included in the signed message.
+</Note>
+
+## Real-World Examples
+
+### Example 1: Token Approval Pre-Hook
+
+Approve a token before trading:
+
+```typescript
+import { encodeFunctionData } from 'viem';
+
+const approvalCall: Call = {
+  target: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+  value: 0n,
+  callData: encodeFunctionData({
+    abi: erc20Abi,
+    functionName: 'approve',
+    args: [
+      '0x9008D19f58AAbD9eD0D60971565AA8510560ab41', // CoW Vault Relayer
+      BigInt('1000000000') // 1000 USDC (6 decimals)
+    ]
+  }),
+  allowFailure: false,
+  isDelegateCall: false
+};
+```
+
+### Example 2: Multi-Step DeFi Strategy
+
+Claim rewards and stake in one transaction:
+
+```typescript
+const hooks: Call[] = [
+  // 1. Claim rewards from protocol
+  {
+    target: rewardsContract,
+    value: 0n,
+    callData: encodeFunctionData({
+      abi: rewardsAbi,
+      functionName: 'claimRewards'
+    }),
+    allowFailure: true, // Don't fail if no rewards available
+    isDelegateCall: false
+  },
+  // 2. Stake tokens
+  {
+    target: stakingContract,
+    value: 0n,
+    callData: encodeFunctionData({
+      abi: stakingAbi,
+      functionName: 'stake',
+      args: [amount]
+    }),
+    allowFailure: false,
+    isDelegateCall: false
+  }
+];
+```
+
+### Example 3: ETH Handling
+
+Send ETH with a call:
+
+```typescript
+const wrapETH: Call = {
+  target: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // WETH
+  value: BigInt('1000000000000000000'), // 1 ETH in wei
+  callData: encodeFunctionData({
+    abi: wethAbi,
+    functionName: 'deposit'
+  }),
+  allowFailure: false,
+  isDelegateCall: false
+};
+```
+
+## Gas Optimization Tips
+
+<Tip>
+**Minimize Hook Count**: Each additional hook adds gas overhead. Combine operations when possible.
+</Tip>
+
+<Tip>
+**Use allowFailure Strategically**: Setting `allowFailure: true` adds a small gas cost but prevents reverts.
+</Tip>
+
+<Tip>
+**Avoid Delegatecalls When Possible**: Regular calls are cheaper and safer than delegatecalls.
+</Tip>
+
+## Security Considerations
+
+<Warning>
+**Validate Target Addresses**: Always verify you're calling the correct contract. A malicious target could drain your COWShed.
+</Warning>
+
+<Warning>
+**Beware of Delegatecall**: Only use `isDelegateCall: true` with contracts you completely trust. The called contract can modify your COWShed's storage.
+</Warning>
+
+<Info>
+All hooks are executed with the COWShed's permissions and access to its funds. Treat hook construction with the same care as handling private keys.
+</Info>
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Signatures" icon="signature" href="/concepts/signatures">
+    Learn how to sign hook executions
+  </Card>
+  
+  <Card title="Nonces" icon="hashtag" href="/concepts/nonces">
+    Understand nonce management for hooks
+  </Card>
+  
+  <Card title="Pre-Signing" icon="file-signature" href="/concepts/presigning">
+    Execute hooks without off-chain signatures
+  </Card>
+  
+  <Card title="executeHooks" icon="play" href="/api/cowshed">
+    API reference for hook execution
+  </Card>
+</CardGroup>

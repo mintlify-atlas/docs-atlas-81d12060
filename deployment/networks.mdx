@@ -1,0 +1,120 @@
+---
+title: 'Deployed Networks'
+description: 'Complete list of COW Shed contract deployments across all supported chains'
+icon: 'globe'
+---
+
+COW Shed contracts are deployed to deterministic addresses across multiple EVM-compatible chains using CREATE2. This ensures consistent addresses for easier integration and user experience.
+
+## Overview
+
+The following contracts are deployed:
+
+- **COWShed**: The main proxy implementation contract
+- **COWShedFactory**: Factory contract for deploying user-owned proxies
+- **COWShedForComposableCoW**: Specialized version with Composable CoW support (Gnosis Chain only)
+
+## Mainnet Deployments
+
+### Ethereum Mainnet (Chain ID: 1)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View on Etherscan](https://etherscan.io/tx/0xd854bf4af2bfa429aefc47b567756c8bb9abc8155b3f1dddb56cacc787555f60) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View on Etherscan](https://etherscan.io/tx/0x135fc22f7ee049ab18be96cf97015a858c714d49f607eb120a2f5af08e0a2dd4) |
+
+### Gnosis Chain (Chain ID: 100)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0x62d3a7ff48f9ae1c28a9552a055482f8c63787f8` | [View on Gnosisscan](https://gnosisscan.io/tx/0x741527c60b0060bc64e72220ca345dab5d37bf69765a8b87d2ce11df11970cf4) |
+| COWShedFactory | `0x4f4350bf2c74aacd508d598a1ba94ef84378793d` | [View on Gnosisscan](https://gnosisscan.io/tx/0xcac32df12864ffb4da7843e5bf1e302dca79c485ef30da437a2a3b338146f924) |
+| COWShedForComposableCoW | `0x6773d5aa31a1ead34127d564d6e258e66254ebdb` | [View on Gnosisscan](https://gnosisscan.io/tx/0xa2bd34442d22febfc46cb8651e7ab3dfb4057a3ed525d1a98539d1f88c94b331) |
+
+<Info>
+  Gnosis Chain is the only network with the **COWShedForComposableCoW** deployment, which integrates with the Composable CoW protocol.
+</Info>
+
+### Polygon (Chain ID: 137)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View on Polygonscan](https://polygonscan.com/tx/0x43ef8ed27cd52fb49cb1be9f976aebe4983a6982744c607d2305b2e4b392d20b) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View on Polygonscan](https://polygonscan.com/tx/0x9d877eaa06776c30a409fc31db365e8441f982598586345d53ffaee4f9d2da6d) |
+
+### BNB Smart Chain (Chain ID: 56)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View on BscScan](https://bscscan.com/tx/0x409827f798120c1e68837464d3ad4b5d31a25c6cd00cc66ba410416d81cdc385) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View on BscScan](https://bscscan.com/tx/0x76d25671fd1c31044a6cf481df15649fc3503cf5a492de92be8601fee02e259f) |
+
+### Arbitrum One (Chain ID: 42161)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View on Arbiscan](https://arbiscan.io/tx/0xc23113cbfffb8c4125d4a31cf00616648b598dcb9754659e2eb0021af924a753) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View on Arbiscan](https://arbiscan.io/tx/0x97b8fa7baf78bca1836e6a7cdce3bd0b983fa96352fc168ebf5f24ba63f23a91) |
+
+### Avalanche C-Chain (Chain ID: 43114)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View on Snowtrace](https://snowtrace.io/tx/0x0bdc2e1394c31929786eda6c6028de8bd16f15adc73a6187ed7f96026e5609e6) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View on Snowtrace](https://snowtrace.io/tx/0xcf5f0c9a40d26d09e497a6ce871df31ca13d8e72b1724d8ba015368cf36068f1) |
+
+### Base (Chain ID: 8453)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View on Basescan](https://basescan.org/tx/0x986c0d60bb9488b95cfd547a9058e0c6a5714bce30911987f22899066e2a026f) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View on Basescan](https://basescan.org/tx/0x29c63a32edbf7b29ae73e6a8e5293b65c65906943ad41092205a473e4bbf56d0) |
+
+### Linea (Chain ID: 59144)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View on Lineascan](https://lineascan.build/tx/0x72bf72a698a419297ac7df4b97d33efda3218a60b1ddf621eafbf8ef1111ac2f) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View on Lineascan](https://lineascan.build/tx/0xad527499a510773fed02f46787d8ed9190d52fe40997c661353805e2bc056a65) |
+
+### Meta Apes (Chain ID: 232)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cF562AD418Bf0453F4B662ebf6A2489eD88` | [View Transaction](https://explorer.metaapesgame.com/tx/0x74a283f97c35c844e36f0c3353ec40d0012032721f72ded5b783938aff8e98e8) |
+| COWShedFactory | `0x312f92fe5f1710408B20D52A374fa29e099cFA86` | [View Transaction](https://explorer.metaapesgame.com/tx/0x53df62bc122ecb5bfa9770776bb54b3a81e5f7238e4b02c52ac7000eb36c86bd) |
+
+### mainnet (Chain ID: 9745)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View Transaction](https://explorer.mainnet.com/tx/0x4bf69c359cafcd7d896314551ec04a35fb6ac4a5794753f0611fb7fdb86e0898) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View Transaction](https://explorer.mainnet.com/tx/0x33d7ed32d433467d75373baf0bcbc99fec65df8a8fd6f67673efa8378f67ebcc) |
+
+## Testnet Deployments
+
+### Sepolia (Chain ID: 11155111)
+
+| Contract | Address | Transaction Hash |
+|----------|---------|------------------|
+| COWShed | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` | [View on Sepolia Etherscan](https://sepolia.etherscan.io/tx/0x8da7eae524ad41f088d3096049787556f4221e3c8f8f82589883d4e60576888f) |
+| COWShedFactory | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | [View on Sepolia Etherscan](https://sepolia.etherscan.io/tx/0x4d42972f24fa0846523513e7733b1d2238d0a709c3e4a2cd415cc64885bd1762) |
+
+## Deterministic Deployment
+
+<Info>
+  All contracts are deployed using CREATE2 with a zero salt (`bytes32(0)`), ensuring the same addresses across chains. This makes integration easier and provides a consistent user experience.
+</Info>
+
+The deterministic deployment approach means:
+
+- **Predictable Addresses**: Users can know their proxy address before deployment
+- **Cross-Chain Consistency**: Same addresses on different chains simplify integrations
+- **Gas Efficient**: Users only pay for deployment when they first use the proxy
+- **Lazy Deployment**: Proxies are deployed on-demand during the first hook execution
+
+## Verifying Contracts
+
+All deployed contracts are verified on their respective block explorers. You can view the source code, read contract state, and interact with the contracts directly through the explorer interfaces.
+
+For deployment and verification instructions, see the [Deployment Guide](/deployment/deploy-guide) and [Verification Guide](/deployment/verification).

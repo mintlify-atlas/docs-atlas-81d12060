@@ -1,0 +1,365 @@
+---
+title: "COWShedFactory"
+description: "Complete API reference for the COWShedFactory smart contract"
+---
+
+# COWShedFactory Contract
+
+The COWShedFactory contract is responsible for deploying and managing COWShed proxies for users. It uses CREATE2 for deterministic proxy deployment, ensuring each user has a predictable proxy address. The factory also provides a convenient interface for executing hooks that automatically deploys proxies if needed.
+
+**Source:** `~/workspace/source/src/COWShedFactory.sol`
+
+## Immutable Variables
+
+### implementation
+
+```solidity
+address public immutable implementation
+```
+
+The address of the COWShed implementation contract that all proxies will delegate to.
+
+<Note>
+  This address is set in the constructor and cannot be changed. Each individual proxy can upgrade to a different implementation if needed.
+</Note>
+
+**See also:** `COWShedFactory.sol:16`
+
+---
+
+### PROXY_CREATION_CODE
+
+```solidity
+bytes public constant PROXY_CREATION_CODE = type(COWShedProxy).creationCode
+```
+
+The deployment bytecode of the COWShedProxy contract, captured at compile time. Used for CREATE2 address calculation.
+
+**See also:** `COWShedFactory.sol:20`
+
+---
+
+## State Variables
+
+### ownerOf
+
+```solidity
+mapping(address => address) public ownerOf
+```
+
+Maps proxy addresses to their owner addresses. Populated when a proxy is deployed.
+
+<ParamField path="proxy" type="address">
+  The proxy contract address
+</ParamField>
+
+<ResponseField name="owner" type="address">
+  The owner of the proxy
+</ResponseField>
+
+**See also:** `COWShedFactory.sol:23`
+
+---
+
+## Constructor
+
+```solidity
+constructor(address impl)
+```
+
+Creates a new COWShedFactory with the specified implementation address.
+
+<ParamField path="impl" type="address">
+  The address of the COWShed implementation contract
+</ParamField>
+
+**Errors:**
+- `NoCodeAtImplementation()` - If the provided implementation address has no code
+
+<Warning>
+  The implementation address must be a deployed contract. The factory verifies this by checking the code length.
+</Warning>
+
+**See also:** `COWShedFactory.sol:25`
+
+---
+
+## Core Functions
+
+### initializeProxy
+
+```solidity
+function initializeProxy(address user) external
+```
+
+Deploys and initializes a proxy for the specified user if it doesn't already exist. Uses CREATE2 with the user address as the salt for deterministic deployment.
+
+<ParamField path="user" type="address">
+  The address of the user to deploy a proxy for
+</ParamField>
+
+**Behavior:**
+- If proxy already exists (has code), this function does nothing
+- If proxy doesn't exist, deploys it with CREATE2 and calls `initialize()`
+- Sets the factory as the initial trusted executor
+- Populates the `ownerOf` mapping
+
+**Emits:** `COWShedBuilt(user, proxy)` - Only when a new proxy is deployed
+
+**Gas Optimization:** You don't need to call this function separately before `executeHooks()` - that function will deploy the proxy automatically if needed.
+
+**See also:** `COWShedFactory.sol:34`
+
+---
+
+### executeHooks
+
+```solidity
+function executeHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline,
+    address user,
+    bytes calldata signature
+) external
+```
+
+Executes hooks on a user's proxy, deploying and initializing it first if necessary. This is the main entry point for executing authenticated hooks through the factory.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to execute on the user's proxy
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce to prevent replay attacks
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Unix timestamp after which the signature is no longer valid
+</ParamField>
+
+<ParamField path="user" type="address">
+  The user whose proxy should execute these hooks (signature must be from this user)
+</ParamField>
+
+<ParamField path="signature" type="bytes">
+  EIP-712 signature from the user authorizing these hooks
+</ParamField>
+
+**Process:**
+1. Calculates the deterministic proxy address for the user
+2. Deploys and initializes the proxy if it doesn't exist
+3. Calls `COWShed.executeHooks()` on the proxy with the provided parameters
+
+**Access:** Anyone can call this function with a valid signature from the user
+
+**Emits:** `COWShedBuilt(user, proxy)` - Only if a new proxy is deployed
+
+**Errors:**
+- Any errors from `COWShed.executeHooks()` will propagate (e.g., `InvalidSignature()`, `NonceAlreadyUsed()`)
+
+<Note>
+  The signature must be created by signing over the calls, nonce, and deadline using the user's private key and the proxy's EIP-712 domain.
+</Note>
+
+**See also:** `COWShedFactory.sol:42`
+
+---
+
+### proxyOf
+
+```solidity
+function proxyOf(address who) public view returns (address)
+```
+
+Computes the deterministic CREATE2 address where a user's proxy is or will be deployed.
+
+<ParamField path="who" type="address">
+  The user address
+</ParamField>
+
+<ResponseField name="proxy" type="address">
+  The deterministic proxy address for this user
+</ResponseField>
+
+**Determinism:** The same user address will always produce the same proxy address for a given factory deployment.
+
+**Formula:**
+```solidity
+address = CREATE2(
+  deployer: factory,
+  salt: bytes32(uint256(uint160(user))),
+  initCodeHash: keccak256(abi.encodePacked(
+    PROXY_CREATION_CODE,
+    abi.encode(implementation, user)
+  ))
+)
+```
+
+<Note>
+  This function returns the same address regardless of whether the proxy has been deployed yet.
+</Note>
+
+**See also:** `COWShedFactory.sol:60`
+
+---
+
+## Events
+
+### COWShedBuilt
+
+```solidity
+event COWShedBuilt(address user, address shed)
+```
+
+Emitted when a new COWShed proxy is deployed for a user.
+
+<ParamField path="user" type="address">
+  The user address (admin/owner of the proxy)
+</ParamField>
+
+<ParamField path="shed" type="address">
+  The deployed proxy contract address
+</ParamField>
+
+**See also:** `COWShedFactory.sol:13`
+
+---
+
+## Errors
+
+### InvalidSignature
+
+```solidity
+error InvalidSignature()
+```
+
+Thrown when signature verification fails. This error is defined but not directly thrown by the factory - it propagates from `COWShed.executeHooks()`.
+
+---
+
+### NoCodeAtImplementation
+
+```solidity
+error NoCodeAtImplementation()
+```
+
+Thrown in the constructor if the provided implementation address has no deployed code.
+
+**See also:** `COWShedFactory.sol:10`
+
+---
+
+### NonceAlreadyUsed
+
+```solidity
+error NonceAlreadyUsed()
+```
+
+Thrown when attempting to use a nonce that has already been consumed. This error propagates from `COWShed.executeHooks()`.
+
+---
+
+## Internal Functions
+
+### _initializeProxy
+
+```solidity
+function _initializeProxy(address user, address proxy) internal returns (bool newlyDeployed)
+```
+
+Internal function that deploys and initializes a proxy if it doesn't exist.
+
+<ParamField path="user" type="address">
+  The user address (will be the admin of the proxy)
+</ParamField>
+
+<ParamField path="proxy" type="address">
+  The expected proxy address (pre-calculated with CREATE2)
+</ParamField>
+
+<ResponseField name="newlyDeployed" type="bool">
+  True if a new proxy was deployed, false if it already existed
+</ResponseField>
+
+**Process:**
+1. Checks if code exists at the proxy address
+2. If no code exists:
+   - Deploys COWShedProxy with CREATE2 using user address as salt
+   - Calls `initialize()` on the deployed proxy
+   - Emits `COWShedBuilt` event
+   - Updates `ownerOf` mapping
+   - Returns `true`
+3. If code already exists, returns `false`
+
+**See also:** `COWShedFactory.sol:74`
+
+---
+
+## Usage Examples
+
+### Deploying a Proxy
+
+```solidity
+// Deploy a proxy for a user
+factory.initializeProxy(userAddress);
+
+// Get the proxy address (works before or after deployment)
+address proxy = factory.proxyOf(userAddress);
+
+// Check ownership
+address owner = factory.ownerOf(proxy); // returns userAddress
+```
+
+### Executing Hooks Through Factory
+
+```solidity
+// Prepare calls
+Call[] memory calls = new Call[](1);
+calls[0] = Call({
+    target: token,
+    value: 0,
+    callData: abi.encodeCall(IERC20.approve, (spender, amount)),
+    allowFailure: false,
+    isDelegateCall: false
+});
+
+bytes32 nonce = keccak256(abi.encodePacked("tx-1"));
+uint256 deadline = block.timestamp + 1 hours;
+
+// User signs with their private key
+bytes memory signature = signForProxy(calls, nonce, deadline, userPrivateKey);
+
+// Anyone can submit this to the factory
+factory.executeHooks(calls, nonce, deadline, userAddress, signature);
+// Proxy is automatically deployed if it doesn't exist
+```
+
+### Pre-computing Proxy Address
+
+```solidity
+// You can know the proxy address before deployment
+address predictedProxy = factory.proxyOf(futureUser);
+
+// Send ETH to it in advance
+payable(predictedProxy).transfer(1 ether);
+
+// Later, when the proxy is deployed, it will have the ETH
+factory.initializeProxy(futureUser);
+```
+
+---
+
+## Integration Notes
+
+<Note>
+  **Deterministic Deployment**: The CREATE2 salt is `bytes32(uint256(uint160(user)))`, which means each user gets exactly one proxy per factory instance.
+</Note>
+
+<Warning>
+  **One Proxy Per User**: A user cannot have multiple proxies from the same factory. If you need multiple proxies, deploy multiple factories or use different user addresses.
+</Warning>
+
+<Note>
+  **Gas Efficiency**: The `executeHooks()` function combines proxy deployment and hook execution in one transaction, saving gas when deploying a new proxy.
+</Note>

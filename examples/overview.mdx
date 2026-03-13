@@ -1,0 +1,126 @@
+---
+title: Examples Overview
+description: Explore practical examples demonstrating COW Shed's capabilities for composing DeFi operations with CoW Swap hooks
+---
+
+## Introduction
+
+COW Shed provides powerful primitives for composing complex DeFi operations with CoW Swap. These examples demonstrate real-world use cases including just-in-time (JIT) borrowing, cross-chain bridging, and claiming vested tokens.
+
+Each example shows how to leverage pre-hooks and post-hooks to create sophisticated trading flows that would be difficult or impossible with standard swaps.
+
+## Available Examples
+
+<CardGroup cols={2}>
+  <Card title="Mint DAI & Swap" icon="coins" href="/examples/mint-dai-swap">
+    JIT borrow DAI from Maker protocol right before swapping to COW
+  </Card>
+  <Card title="Swap & Bridge" icon="bridge" href="/examples/swap-bridge">
+    Bridge swapped tokens to another chain using Weiroll post-hooks
+  </Card>
+  <Card title="Claim & Swap" icon="hand-holding-dollar" href="/examples/claim-swap">
+    Claim vested WETH from Llama Pay before swapping to COW
+  </Card>
+</CardGroup>
+
+## What You'll Learn
+
+### Pre-Hooks
+Execute actions **before** the swap happens:
+- **Mint DAI & Swap**: Borrow DAI from Maker CDP
+- **Claim & Swap**: Claim vested tokens from Llama Pay
+
+### Post-Hooks
+Execute actions **after** the swap completes:
+- **Swap & Bridge**: Bridge output tokens to another chain using exact swap amounts
+
+### Advanced Patterns
+- Using the proxy address as the receiver for swapped tokens
+- Signing hook intents with EIP-712
+- Managing nonces for hook execution
+- Using Weiroll for dynamic amount handling
+- Interacting with DeFi protocols through hooks
+
+## Prerequisites
+
+Before running the examples, ensure you have:
+
+1. **Node.js and Yarn** installed
+2. **Foundry** installed (for contract deployment)
+3. **Environment variables** configured:
+   ```bash
+   export FORK_URL="your_ethereum_rpc_url"
+   export FORK_BLOCK_NUMBER="latest"  # optional
+   ```
+
+4. **Dependencies installed**:
+   ```bash
+   yarn install
+   ```
+
+## Running Examples
+
+Each example can be run independently using ts-node:
+
+```bash
+yarn ts-node examples/mintDaiAndSwap.ts
+yarn ts-node examples/swapAndBridge.ts
+yarn ts-node examples/claimAndSwap.ts
+```
+
+<Note>
+Examples use Anvil (local Ethereum fork) to simulate transactions. They automatically:
+- Deploy COW Shed contracts
+- Set up test accounts with funds
+- Execute the full flow including hooks
+</Note>
+
+## Example Structure
+
+All examples follow a similar pattern:
+
+<Steps>
+  <Step title="Initialize COW Shed SDK">
+    Create an instance with factory and implementation addresses
+  </Step>
+  <Step title="Compute Proxy Address">
+    Calculate the deterministic proxy address for the user
+  </Step>
+  <Step title="Prepare Hook Calls">
+    Define the pre or post-hook operations as `ICall[]`
+  </Step>
+  <Step title="Sign Hook Intent">
+    Create EIP-712 signature for hook authorization
+  </Step>
+  <Step title="Create Order with Hooks">
+    Submit the CoW Swap order with hook metadata
+  </Step>
+  <Step title="Settle Order">
+    Execute the swap and hooks in a single transaction
+  </Step>
+</Steps>
+
+## Common Utilities
+
+The examples use shared utilities from `common.ts`:
+
+- **`wrapEther()`**: Convert ETH to WETH
+- **`approveToken()`**: Approve token spending
+- **`createOrder()`**: Create a CoW Swap order with hooks
+- **`settleOrder()`**: Settle the order and execute hooks
+- **`fnCalldata()`**: Encode function calldata
+- **`withAnvilProvider()`**: Set up local Anvil fork
+
+## Next Steps
+
+<CardGroup cols={3}>
+  <Card title="Mint DAI & Swap" icon="arrow-right" href="/examples/mint-dai-swap">
+    Start with JIT borrowing
+  </Card>
+  <Card title="API Reference" icon="book" href="/api/cowshed">
+    Explore contract API
+  </Card>
+  <Card title="Hook Concepts" icon="link" href="/concepts/hooks">
+    Learn about hooks
+  </Card>
+</CardGroup>

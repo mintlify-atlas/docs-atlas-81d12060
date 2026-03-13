@@ -1,0 +1,617 @@
+---
+title: 'Integration Guide'
+description: 'Complete guide to integrating COW Shed with CoW Protocol orders for pre and post-swap hooks'
+---
+
+# Integration Guide
+
+Learn how to integrate COW Shed with CoW Protocol to execute authenticated hooks before and after your swaps.
+
+## Overview
+
+COW Shed enables you to:
+- Execute arbitrary contract calls before a swap (pre-hooks)
+- Execute arbitrary contract calls after a swap (post-hooks)
+- Use your proxy as the receiver address for swapped tokens
+- Perform permissioned actions like transferring assets or managing DeFi positions
+
+## Integration Architecture
+
+```
+┌─────────────┐
+│   Your App  │
+└──────┬──────┘
+       │ 1. Create order with hooks in appData
+       ▼
+┌─────────────────────────┐
+│  CoW Protocol Order API │
+└────────────┬────────────┘
+             │ 2. Solver executes order
+             ▼
+┌──────────────────────────┐
+│  Settlement Contract     │
+│  ┌────────────────────┐  │
+│  │ Pre-hooks          │──┼──► COWShedFactory.executeHooks()
+│  ├────────────────────┤  │         │
+│  │ Execute Swap       │  │         ▼
+│  ├────────────────────┤  │    ┌─────────────┐
+│  │ Post-hooks         │──┼──► │  COWShed    │
+│  └────────────────────┘  │    │  Proxy      │
+└──────────────────────────┘    └─────────────┘
+```
+
+## Step-by-Step Integration
+
+### 1. Set Up the SDK
+
+Install and configure the COW Shed SDK:
+
+```bash
+npm install @cowprotocol/cow-shed-sdk ethers
+```
+
+```typescript
+import { CowShedSdk, ICall } from '@cowprotocol/cow-shed-sdk';
+import { ethers } from 'ethers';
+
+const sdk = new CowShedSdk({
+  factoryAddress: '0x312f92fe5f1710408b20d52a374fa29e099cfa86', // Ethereum
+  implementationAddress: '0xa2704cf562ad418bf0453f4b662ebf6a2489ed88',
+  chainId: 1
+});
+```
+
+### 2. Compute Your Proxy Address
+
+Get your deterministic proxy address to use as the receiver:
+
+```typescript
+const userAddress = '0x...';
+const proxyAddress = sdk.computeProxyAddress(userAddress);
+
+console.log('Proxy address:', proxyAddress);
+```
+
+### 3. Construct Hook Calls
+
+Define the operations you want to execute in your hooks:
+
+<CodeGroup>
+
+```typescript Pre-Hook Example: JIT Mint DAI
+const ABI_CODER = new ethers.AbiCoder();
+
+const VAT = '0x35D1b3F3D7966A1DFe207aa4514C12a259A0492B';
+const DAI_JOIN = '0x9759A6Ac90977b93B58547b4A71c78317f391A28';
+
+const collateral = ethers.parseEther('10');
+const daiDebt = ethers.parseEther('8000');
+const ilk = '0x4554482d41...'  // ETH-A ilk
+
+const preHookCalls: ICall[] = [
+  {
+    // Create CDP and borrow DAI
+    target: VAT,
+    value: 0n,
+    callData: ethers.concat([
+      ethers.id('frob(bytes32,address,address,address,int256,int256)').slice(0, 10),
+      ABI_CODER.encode(
+        ['bytes32', 'address', 'address', 'address', 'int256', 'int256'],
+        [ilk, userAddress, userAddress, proxyAddress, collateral, daiDebt]
+      )
+    ]),
+    allowFailure: false,
+    isDelegateCall: false
+  },
+  {
+    // Approve DAI Join to mint DAI
+    target: VAT,
+    value: 0n,
+    callData: ethers.concat([
+      ethers.id('hope(address)').slice(0, 10),
+      ABI_CODER.encode(['address'], [DAI_JOIN])
+    ]),
+    allowFailure: false,
+    isDelegateCall: false
+  },
+  {
+    // Mint DAI to user
+    target: DAI_JOIN,
+    value: 0n,
+    callData: ethers.concat([
+      ethers.id('exit(address,uint256)').slice(0, 10),
+      ABI_CODER.encode(['address', 'uint256'], [userAddress, daiDebt])
+    ]),
+    allowFailure: false,
+    isDelegateCall: false
+  }
+];
+```
+
+```typescript Post-Hook Example: Bridge Tokens
+const BRIDGE_CONTRACT = '0x...';
+const GNOSIS_CHAIN_ID = 100;
+const COW_TOKEN = '0xDEf1CA1fb7FBcDC777520aa7f396b4E015F497aB';
+
+const postHookCalls: ICall[] = [
+  {
+    // Bridge COW tokens to Gnosis Chain
+    target: BRIDGE_CONTRACT,
+    value: 0n,
+    callData: ethers.concat([
+      ethers.id('bridge(address,uint256,uint256,address)').slice(0, 10),
+      ABI_CODER.encode(
+        ['address', 'uint256', 'uint256', 'address'],
+        [COW_TOKEN, amountReceived, GNOSIS_CHAIN_ID, userAddress]
+      )
+    ]),
+    allowFailure: false,
+    isDelegateCall: false
+  }
+];
+```
+
+```typescript Helper: Encoding Function Calls
+// Helper function to encode function calls
+function encodeFunctionCall(
+  signature: string,
+  types: string[],
+  values: any[]
+): string {
+  const selector = ethers.id(signature).slice(0, 10);
+  const params = new ethers.AbiCoder().encode(types, values);
+  return ethers.concat([selector, params]);
+}
+
+// Usage
+const callData = encodeFunctionCall(
+  'transfer(address,uint256)',
+  ['address', 'uint256'],
+  [recipient, amount]
+);
+```
+
+</CodeGroup>
+
+### 4. Manage Nonces
+
+Nonces ensure each signed hook can only be executed once:
+
+<CodeGroup>
+
+```typescript Sequential Nonces (Gas Efficient)
+// Most gas efficient - use sequential nonces
+let nonceCounter = 0;
+
+function getNextNonce(): string {
+  const nonce = ethers.zeroPadValue(
+    ethers.toBeHex(nonceCounter),
+    32
+  );
+  nonceCounter++;
+  return nonce;
+}
+
+const nonce = getNextNonce();
+```
+
+```typescript Random Nonces
+// For parallel order execution
+import { randomBytes } from 'crypto';
+
+function getRandomNonce(): string {
+  return ethers.hexlify(randomBytes(32));
+}
+
+const nonce = getRandomNonce();
+```
+
+```typescript Named Nonces
+// For human-readable identification
+function getNamedNonce(name: string): string {
+  return ethers.encodeBytes32String(name);
+}
+
+const nonce = getNamedNonce('swap-dai-to-cow-001');
+```
+
+```typescript Check Nonce Usage
+// Check if a nonce has been used
+const shed = new ethers.Contract(
+  proxyAddress,
+  ['function nonces(bytes32) view returns (bool)'],
+  provider
+);
+
+const isUsed = await shed.nonces(nonce);
+if (isUsed) {
+  console.log('Nonce already used!');
+}
+```
+
+</CodeGroup>
+
+<Warning>
+**Nonce Best Practices:**
+- Sequential nonces save gas due to bitmap implementation
+- Random nonces allow multiple orders to be executed in any order
+- Never reuse a nonce - each execution consumes it permanently
+- You can revoke unused nonces by calling `revokeNonce(bytes32)`
+</Warning>
+
+### 5. Sign Hook Messages with EIP-712
+
+Create and sign the EIP-712 message for hook authentication:
+
+<CodeGroup>
+
+```typescript EOA Signature
+import { CowShedSdk } from '@cowprotocol/cow-shed-sdk';
+import { ethers } from 'ethers';
+
+const wallet = new ethers.Wallet(privateKey);
+
+// Set deadline (e.g., 2 hours from now)
+const deadline = BigInt(Math.floor(Date.now() / 1000) + 7200);
+
+// Get hash to sign using SDK
+const hashToSign = sdk.hashToSignWithUser(
+  calls,
+  nonce,
+  deadline,
+  wallet.address
+);
+
+// Sign the hash
+const signature = wallet.signingKey.sign(hashToSign);
+
+// Encode signature as r||s||v (65 bytes)
+const encodedSignature = CowShedSdk.encodeEOASignature(
+  BigInt(signature.r),
+  BigInt(signature.s),
+  signature.v
+);
+
+console.log('Signature:', encodedSignature);
+```
+
+```typescript Smart Contract Wallet (EIP-1271)
+import { CowShedSdk } from '@cowprotocol/cow-shed-sdk';
+
+// For smart contract wallets (Safe, etc.)
+const hashToSign = sdk.hashToSignWithUser(
+  calls,
+  nonce,
+  deadline,
+  smartWalletAddress
+);
+
+// Sign using your smart wallet's signing mechanism
+const signature = await smartWallet.signMessage(
+  ethers.getBytes(hashToSign)
+);
+
+// Smart contract wallets use EIP-1271
+// The signature format depends on your wallet implementation
+console.log('EIP-1271 Signature:', signature);
+```
+
+```typescript Manual EIP-712 Signing
+// If not using the SDK, you can sign manually
+const domain = {
+  name: 'COWShed',
+  version: '2.1.0',
+  chainId: 1,
+  verifyingContract: proxyAddress
+};
+
+const types = {
+  ExecuteHooks: [
+    { type: 'Call[]', name: 'calls' },
+    { type: 'bytes32', name: 'nonce' },
+    { type: 'uint256', name: 'deadline' }
+  ],
+  Call: [
+    { type: 'address', name: 'target' },
+    { type: 'uint256', name: 'value' },
+    { type: 'bytes', name: 'callData' },
+    { type: 'bool', name: 'allowFailure' },
+    { type: 'bool', name: 'isDelegateCall' }
+  ]
+};
+
+const value = {
+  calls: calls,
+  nonce: nonce,
+  deadline: deadline
+};
+
+// Sign with ethers
+const signature = await wallet.signTypedData(domain, types, value);
+```
+
+</CodeGroup>
+
+### 6. Create CoW Protocol Order with Hooks
+
+Integrate your hooks into a CoW Protocol order:
+
+```typescript
+import { OrderBookApi, OrderQuoteRequest, OrderCreation } from '@cowprotocol/cow-sdk';
+import { MetadataApi } from '@cowprotocol/app-data';
+
+const orderBookApi = new OrderBookApi({ chainId: 1 });
+const metadataApi = new MetadataApi();
+
+// Encode the hook execution calldata
+const hooksCalldata = CowShedSdk.encodeExecuteHooksForFactory(
+  calls,
+  nonce,
+  deadline,
+  wallet.address,
+  encodedSignature
+);
+
+// Create hooks metadata
+const hooks = {
+  pre: [{
+    target: '0x312f92fe5f1710408b20d52a374fa29e099cfa86', // Factory address
+    callData: hooksCalldata,
+    gasLimit: '500000'
+  }],
+  post: [] // Add post-hooks if needed
+};
+
+// Generate appData with hooks
+const appDataDoc = await metadataApi.generateAppDataDoc({
+  appCode: 'Your App Name',
+  environment: 'production',
+  metadata: {
+    hooks
+  }
+});
+
+const { appDataHex } = await metadataApi.appDataToCid(appDataDoc);
+
+// Create the order
+const order: OrderCreation = {
+  sellToken: '0x6B175474E89094C44Da98b954EedeAC495271d0F', // DAI
+  buyToken: '0xDEf1CA1fb7FBcDC777520aa7f396b4E015F497aB',  // COW
+  sellAmount: '8000000000000000000000', // 8000 DAI
+  buyAmount: '100000000000000000000',   // 100 COW minimum
+  validTo: Math.floor(Date.now() / 1000) + 3600, // 1 hour
+  appData: appDataHex,
+  feeAmount: '0',
+  kind: 'sell',
+  partiallyFillable: false,
+  receiver: wallet.address, // Or use proxyAddress for post-hooks
+  sellTokenBalance: 'erc20',
+  buyTokenBalance: 'erc20',
+  signingScheme: 'eip712',
+  signature: '0x', // Your order signature
+  from: wallet.address
+};
+
+// Submit the order
+const orderId = await orderBookApi.sendOrder(order);
+console.log('Order created:', orderId);
+```
+
+### 7. Using Proxy as Receiver
+
+When you want to perform actions on received tokens in post-hooks:
+
+```typescript
+import { CowShedSdk } from '@cowprotocol/cow-shed-sdk';
+
+// Compute proxy address
+const proxyAddress = sdk.computeProxyAddress(wallet.address);
+
+// Define post-hook to bridge received tokens
+const postHookCalls: ICall[] = [
+  {
+    target: BRIDGE_CONTRACT,
+    value: 0n,
+    callData: encodeFunctionCall(
+      'bridgeToken(address,address,uint256)',
+      ['address', 'address', 'uint256'],
+      [COW_TOKEN, userAddress, amountReceived]
+    ),
+    allowFailure: false,
+    isDelegateCall: false
+  }
+];
+
+// Sign post-hook message
+const postNonce = getNextNonce();
+const postDeadline = BigInt(Math.floor(Date.now() / 1000) + 7200);
+const postHashToSign = sdk.hashToSignWithUser(
+  postHookCalls,
+  postNonce,
+  postDeadline,
+  wallet.address
+);
+
+const postSignature = wallet.signingKey.sign(postHashToSign);
+const encodedPostSignature = CowShedSdk.encodeEOASignature(
+  BigInt(postSignature.r),
+  BigInt(postSignature.s),
+  postSignature.v
+);
+
+const postHooksCalldata = CowShedSdk.encodeExecuteHooksForFactory(
+  postHookCalls,
+  postNonce,
+  postDeadline,
+  wallet.address,
+  encodedPostSignature
+);
+
+// Create order with proxy as receiver and post-hooks
+const order: OrderCreation = {
+  // ... other order params
+  receiver: proxyAddress, // Tokens go to proxy
+  appData: appDataHex // Contains post-hooks
+};
+```
+
+<Note>
+**When to use proxy as receiver:**
+- You want to bridge tokens immediately after receiving them
+- You need to deposit tokens into a protocol (Aave, Compound, etc.)
+- You want to stake or lock tokens in a contract
+- The proxy needs ownership of the tokens for post-hook execution
+</Note>
+
+## Common Integration Patterns
+
+### Pattern 1: Just-in-Time Liquidity
+
+```typescript
+// Borrow tokens right before swap
+const preHook = [
+  { /* approve proxy on lending protocol */ },
+  { /* borrow tokens */ },
+  { /* transfer to user for swap */ }
+];
+
+// Repay loan after swap
+const postHook = [
+  { /* approve lending protocol */ },
+  { /* repay loan */ }
+];
+```
+
+### Pattern 2: Auto-Compounding
+
+```typescript
+// Set proxy as receiver, auto-stake swapped tokens
+const postHook = [
+  { /* approve staking contract */ },
+  { /* stake all received tokens */ }
+];
+```
+
+### Pattern 3: Cross-Chain Swap
+
+```typescript
+// Use proxy as receiver and bridge in post-hook
+const postHook = [
+  { /* approve bridge contract */ },
+  { /* bridge tokens to target chain */ }
+];
+```
+
+## Testing Your Integration
+
+<CodeGroup>
+
+```typescript Local Testing
+import { createAnvil } from '@viem/anvil';
+
+// Fork mainnet for testing
+const anvil = createAnvil({
+  forkUrl: process.env.MAINNET_RPC_URL,
+  forkBlockNumber: 18000000
+});
+
+await anvil.start();
+
+// Your tests here
+// ...
+
+await anvil.stop();
+```
+
+```typescript Verify Signature Off-Chain
+import { CowShedSdk } from '@cowprotocol/cow-shed-sdk';
+import { ethers } from 'ethers';
+
+// Verify signature is valid before submitting
+const hashToSign = sdk.hashToSignWithUser(
+  calls,
+  nonce,
+  deadline,
+  userAddress
+);
+
+const recoveredAddress = ethers.recoverAddress(
+  hashToSign,
+  encodedSignature
+);
+
+if (recoveredAddress.toLowerCase() !== userAddress.toLowerCase()) {
+  throw new Error('Invalid signature!');
+}
+
+console.log('Signature valid!');
+```
+
+</CodeGroup>
+
+## Error Handling
+
+<AccordionGroup>
+  <Accordion title="InvalidSignature">
+    **Cause:** The signature doesn't match the hash or the signer isn't the proxy owner.
+    
+    **Solution:**
+    - Verify you're signing with the correct private key
+    - Ensure the domain separator matches (correct chainId and proxy address)
+    - Check that nonce, deadline, and calls match exactly
+  </Accordion>
+
+  <Accordion title="NonceAlreadyUsed">
+    **Cause:** The nonce has already been consumed in a previous execution.
+    
+    **Solution:**
+    - Use a fresh nonce for each hook execution
+    - Check nonce status with `shed.nonces(nonce)` before using
+  </Accordion>
+
+  <Accordion title="DeadlineElapsed">
+    **Cause:** The current block timestamp is greater than the deadline.
+    
+    **Solution:**
+    - Set a deadline far enough in the future (recommended: 1-2 hours)
+    - Monitor order execution time and adjust deadlines accordingly
+  </Accordion>
+
+  <Accordion title="Hook Call Reverted">
+    **Cause:** One of the calls in your hooks failed.
+    
+    **Solution:**
+    - Set `allowFailure: true` for non-critical calls
+    - Test your hook calls individually before combining
+    - Verify contract addresses and calldata encoding
+    - Ensure the proxy has necessary approvals/permissions
+  </Accordion>
+</AccordionGroup>
+
+## Security Checklist
+
+- [ ] Never sign hooks that transfer assets without careful review
+- [ ] Always verify contract addresses before signing
+- [ ] Set reasonable deadlines (not too far in the future)
+- [ ] Use sequential nonces when possible for gas savings
+- [ ] Test hooks thoroughly on testnet before mainnet
+- [ ] Implement proper error handling for failed hooks
+- [ ] Validate all user inputs before constructing calls
+- [ ] Keep track of used nonces to prevent replay attacks
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Hook Examples" icon="flask" href="/examples/overview">
+    See complete working examples of common hook patterns
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/cowshed-factory">
+    Detailed API documentation for all contracts
+  </Card>
+  <Card title="Signatures" icon="shield-halved" href="/concepts/signatures">
+    Deep dive into signature security
+  </Card>
+  <Card title="Nonces" icon="wrench" href="/concepts/nonces">
+    Understand nonce management
+  </Card>
+</CardGroup>

@@ -1,0 +1,374 @@
+---
+title: 'Nonces'
+description: 'Bitmap-based nonce tracking for replay protection'
+---
+
+## What Are Nonces?
+
+Nonces ("number used once") are unique identifiers that prevent **signature replay attacks**. Each signature in COW Shed must include a nonce, and once that signature is executed, the nonce is marked as "used" and can never be executed again.
+
+This ensures:
+- **No Double Execution**: The same signed message can't be executed twice
+- **User Control**: You choose which signatures to execute and in what order
+- **Revocation**: You can invalidate signatures by revoking their nonces
+
+## Nonce Format
+
+COW Shed nonces are **`bytes32`** values (32 bytes / 256 bits), giving you an enormous nonce space:
+
+```solidity
+bytes32 nonce = 0x0000000000000000000000000000000000000000000000000000000000000001;
+```
+
+You can use:
+- **Sequential nonces**: `0x01`, `0x02`, `0x03`, ...
+- **Random nonces**: Generated cryptographically
+- **Structured nonces**: Encode metadata in the bytes
+
+<Info>
+Unlike most contracts that enforce sequential nonces (0, 1, 2, ...), COW Shed lets you use **any bytes32 value** in **any order**.
+</Info>
+
+## Bitmap-Based Storage
+
+COW Shed uses a **bitmap** to track used nonces efficiently. This is implemented using Solady's `LibBitmap` in `COWShedStorage.sol`.
+
+### Storage Structure
+
+From `COWShedStorage.sol:20-25`:
+
+```solidity COWShedStorage.sol
+struct State {
+    bool initialized;
+    address trustedExecutor;
+    LibBitmap.Bitmap nonces;  // Bitmap tracking used nonces
+    IPreSignStorage preSignStorage;
+}
+```
+
+The `LibBitmap.Bitmap` maps each possible `bytes32` nonce to a single bit:
+- **Bit = 0**: Nonce is available (not used)
+- **Bit = 1**: Nonce is used (consumed)
+
+### Gas Efficiency
+
+Bitmaps are extremely gas-efficient:
+- **Set a nonce**: ~22,000 gas (cold SSTORE) or ~5,000 gas (warm)
+- **Check a nonce**: ~2,100 gas (cold SLOAD) or ~100 gas (warm)
+- **256 nonces** can fit in a single storage slot
+
+## Checking Nonce Status
+
+To check if a nonce has been used, call the `nonces()` view function from `COWShed.sol:147-149`:
+
+```solidity COWShed.sol
+function nonces(bytes32 nonce) external view returns (bool) {
+    return _isNonceUsed(nonce);
+}
+```
+
+The internal implementation from `COWShedStorage.sol:45-47`:
+
+```solidity COWShedStorage.sol
+function _isNonceUsed(bytes32 _nonce) internal view returns (bool) {
+    return _state().nonces.get(uint256(_nonce));
+}
+```
+
+### TypeScript Example
+
+```typescript
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({
+  chain: mainnet,
+  transport: http()
+});
+
+const nonce = '0x0000000000000000000000000000000000000000000000000000000000000001';
+
+const isUsed = await client.readContract({
+  address: cowShedAddress,
+  abi: cowShedAbi,
+  functionName: 'nonces',
+  args: [nonce]
+});
+
+console.log(isUsed ? 'Nonce already used' : 'Nonce available');
+```
+
+## Using Nonces in Signatures
+
+When creating a signature for `executeHooks()`, you must include a nonce:
+
+```typescript
+import { randomBytes } from 'crypto';
+import { hexlify } from 'ethers';
+
+// Option 1: Random nonce
+const randomNonce = hexlify(randomBytes(32));
+// Example: 0x7f9b3c4e2d8a1f6b5c3e9d7a2f4e6c8b1a3f5e7d9c2b4a6e8f1d3c5a7e9b2f4e
+
+// Option 2: Sequential nonce
+const sequentialNonce = '0x0000000000000000000000000000000000000000000000000000000000000042';
+
+// Option 3: Structured nonce (encode timestamp + counter)
+const timestamp = Math.floor(Date.now() / 1000);
+const counter = 5;
+const structuredNonce = ethers.solidityPacked(
+  ['uint128', 'uint128'],
+  [timestamp, counter]
+);
+
+// Use in signature
+const signature = await signTypedData({
+  // ... domain and types
+  message: {
+    calls: callsArray,
+    nonce: randomNonce,  // Use your chosen nonce
+    deadline: deadlineTimestamp
+  }
+});
+```
+
+## Nonce Consumption
+
+When you execute hooks (via `executeHooks()` or `executePreSignedHooks()`), the nonce is automatically marked as used.
+
+From `COWShedStorage.sol:40-43`:
+
+```solidity COWShedStorage.sol
+function _useNonce(bytes32 _nonce) internal {
+    if (_isNonceUsed(_nonce)) revert NonceAlreadyUsed();
+    _state().nonces.set(uint256(_nonce));
+}
+```
+
+This is called by `COWShed._executeCalls()` (lines 164-167):
+
+```solidity COWShed.sol
+function _executeCalls(Call[] calldata calls, bytes32 nonce) internal {
+    _useNonce(nonce);  // Mark nonce as used BEFORE executing calls
+    LibAuthenticatedHooks.executeCalls(calls);
+}
+```
+
+<Warning>
+**Nonces Are Consumed First**: The nonce is marked as used BEFORE the hooks execute. Even if a hook fails, the nonce is consumed.
+</Warning>
+
+<Tip>
+Use `allowFailure: true` on individual calls if you want graceful degradation without losing the nonce.
+</Tip>
+
+## Sequential vs Random Nonces
+
+### Sequential Nonces
+
+**Pros:**
+- Simple to generate and track
+- Easy to detect gaps in execution
+- Predictable for users and UIs
+
+**Cons:**
+- Must execute in order (nonce 5 can't execute until 1-4 are done)
+- Signature ordering dependency
+
+**Implementation:**
+```typescript
+let currentNonce = 0n;
+
+function getNextNonce(): string {
+  currentNonce++;
+  return `0x${currentNonce.toString(16).padStart(64, '0')}`;
+}
+```
+
+### Random Nonces
+
+**Pros:**
+- **Execute in any order**: No dependencies between signatures
+- **Parallel operations**: Multiple signed messages can be prepared simultaneously
+- **Collision-resistant**: 2^256 possible values make collisions impossible in practice
+
+**Cons:**
+- Requires tracking which nonces have been used
+- Slightly more complex management
+
+**Implementation:**
+```typescript
+import { randomBytes } from 'crypto';
+
+function generateRandomNonce(): string {
+  return `0x${randomBytes(32).toString('hex')}`;
+}
+```
+
+### Gas Comparison
+
+Both approaches have **identical gas costs** for nonce operations:
+- First use of a storage slot: ~22,000 gas
+- Subsequent uses in the same slot: ~5,000 gas
+
+<Tip>
+**Best Practice**: Use random nonces for flexibility unless you have a specific reason to enforce ordering.
+</Tip>
+
+## Revoking Nonces
+
+You can invalidate a signature by revoking its nonce before it's executed. This is useful for:
+- Canceling pending operations
+- Invalidating leaked signatures
+- Emergency stops
+
+### Manual Revocation
+
+From `COWShed.sol:139-142`:
+
+```solidity COWShed.sol
+function revokeNonce(bytes32 nonce) external onlyAdmin {
+    _useNonce(nonce);
+}
+```
+
+Only the COWShed **admin** can revoke nonces.
+
+### TypeScript Example
+
+```typescript
+// Revoke a specific nonce
+const nonceToRevoke = '0x0000000000000000000000000000000000000000000000000000000000000042';
+
+const tx = await cowShed.revokeNonce(nonceToRevoke, {
+  from: adminAddress
+});
+
+await tx.wait();
+console.log(`Nonce ${nonceToRevoke} revoked`);
+```
+
+<Warning>
+**Irreversible**: Once a nonce is revoked, it cannot be "un-revoked". The associated signature is permanently invalidated.
+</Warning>
+
+### Batch Revocation
+
+To revoke multiple nonces efficiently:
+
+```typescript
+const noncesToRevoke = [
+  '0x0000000000000000000000000000000000000000000000000000000000000001',
+  '0x0000000000000000000000000000000000000000000000000000000000000002',
+  '0x0000000000000000000000000000000000000000000000000000000000000003'
+];
+
+// Send transactions in parallel (they're independent)
+const txPromises = noncesToRevoke.map(nonce => 
+  cowShed.revokeNonce(nonce)
+);
+
+const txs = await Promise.all(txPromises);
+await Promise.all(txs.map(tx => tx.wait()));
+
+console.log(`Revoked ${noncesToRevoke.length} nonces`);
+```
+
+## Advanced: Structured Nonces
+
+You can encode metadata into nonces for organizational purposes:
+
+```typescript
+import { solidityPacked } from 'ethers';
+
+// Encode: [operation type (8 bits)] [timestamp (120 bits)] [counter (128 bits)]
+function createStructuredNonce(
+  operationType: number,  // 0-255
+  timestamp: number,      // Unix timestamp
+  counter: number         // Sequential ID
+): string {
+  return solidityPacked(
+    ['uint8', 'uint120', 'uint128'],
+    [operationType, timestamp, counter]
+  );
+}
+
+// Example: Pre-hook operation, created at timestamp, ID #42
+const nonce = createStructuredNonce(
+  1,                              // 1 = pre-hook
+  Math.floor(Date.now() / 1000),  // Current time
+  42                               // Counter
+);
+```
+
+<Info>
+The contract doesn't interpret nonce structure - it only checks if the nonce bit is set. Structure is purely for off-chain organization.
+</Info>
+
+## Error Handling
+
+### NonceAlreadyUsed
+
+From `COWShedStorage.sol:17`:
+
+```solidity
+error NonceAlreadyUsed();
+```
+
+This reverts when:
+1. Executing a signature with a nonce that's already been used
+2. Revoking a nonce that's already revoked
+
+**Solution**: Check nonce status with `nonces()` before executing or use a fresh nonce.
+
+```typescript
+// Check before executing
+const isUsed = await cowShed.nonces(nonce);
+
+if (isUsed) {
+  console.error('Nonce already used, generate a new one');
+  nonce = generateRandomNonce();
+}
+```
+
+## Best Practices
+
+<Tip>
+**Store Used Nonces Off-Chain**: Maintain a database of used nonces to avoid conflicts and enable quick lookups.
+</Tip>
+
+<Tip>
+**Check Before Signing**: Always verify a nonce is available before creating a signature to avoid wasted signatures.
+</Tip>
+
+<Tip>
+**Use Random Nonces for Parallelism**: If you're creating multiple signatures simultaneously, random nonces prevent ordering issues.
+</Tip>
+
+<Warning>
+**Don't Reuse Nonces Across Sheds**: Each COWShed instance has its own nonce space. A nonce used in Shed A is independent from the same nonce in Shed B.
+</Warning>
+
+<Info>
+**Nonces ≠ Transaction Nonces**: COW Shed nonces are unrelated to Ethereum transaction nonces. They're purely for signature replay protection.
+</Info>
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Signatures" icon="signature" href="/concepts/signatures">
+    Learn how nonces fit into EIP-712 signatures
+  </Card>
+  
+  <Card title="Hooks" icon="link" href="/concepts/hooks">
+    Understand what gets executed when a nonce is consumed
+  </Card>
+  
+  <Card title="Pre-Signing" icon="file-signature" href="/concepts/presigning">
+    Pre-signing also uses nonces for replay protection
+  </Card>
+  
+  <Card title="revokeNonce" icon="code" href="/api/cowshed">
+    API reference for nonce revocation
+  </Card>
+</CardGroup>

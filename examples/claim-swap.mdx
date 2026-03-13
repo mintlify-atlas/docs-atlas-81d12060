@@ -1,0 +1,445 @@
+---
+title: Claim and Swap
+description: Learn how to use pre-hooks to claim vested tokens from Llama Pay before swapping
+---
+
+## Overview
+
+This example demonstrates **claiming vested tokens** using pre-hooks before swapping. The user has WETH vesting in a Llama Pay contract and uses pre-hooks to claim the vested amount right before swapping to COW tokens.
+
+## Use Case
+
+**Problem**: You have tokens vesting in Llama Pay and want to swap them immediately after claiming, but don't want to do it in separate transactions.
+
+**Solution**: Use COW Shed pre-hooks to:
+1. Claim vested WETH from Llama Pay
+2. Automatically swap the claimed WETH to COW
+
+Both operations happen atomically in a single settlement!
+
+## Key Concepts
+
+### Pre-Hooks for Token Claims
+
+Pre-hooks execute **before** the swap, perfect for:
+- Claiming vested tokens
+- Unwrapping wrapped tokens
+- Collecting rewards or yield
+- Any operation that provides tokens for the swap
+
+### Llama Pay Integration
+
+[Llama Pay](https://llamapay.io/) is a token vesting platform. The example:
+- Creates a vesting contract for demonstration
+- Waits for vesting period
+- Claims vested tokens via pre-hooks
+- Immediately swaps the claimed tokens
+
+### Atomic Claim + Swap
+
+Without hooks, you need 3 transactions:
+1. Claim from vesting contract
+2. Approve token to CoW Swap
+3. Create and settle swap order
+
+With hooks, only 2 transactions:
+1. Approve token + Create order (off-chain signing for hooks)
+2. Settle order (executes claim + swap)
+
+## Implementation
+
+### Step 1: Create Vesting Contract
+
+For this example, we first create a vesting contract:
+
+```typescript
+import { CowShedSdk, ICall } from '@cowprotocol/cow-shed';
+import { ethers, parseEther } from 'ethers';
+
+const VESTING_ESCROW_FACTORY = '0xcf61782465ff973638143d6492b51a85986ab347';
+
+const funder = signers[0];
+const user = signers[1];
+const amount = parseEther('1'); // 1 WETH
+
+// Wrap ETH for the funder
+await wrapEther(provider, funderAddr, amount);
+
+// Create vesting contract
+const vestingContractAddr = await createVest(
+  provider,
+  funderAddr,
+  WETH,
+  userAddr,      // Beneficiary
+  amount,        // Total vested amount
+  500n           // Vesting duration in seconds
+);
+
+console.log('Vesting contract:', vestingContractAddr);
+```
+
+<Note>
+In production, the vesting contract would already exist. This step is just for the example.
+</Note>
+
+### Step 2: Fast-Forward Time
+
+```typescript
+// Wait for vesting period to complete
+await provider.send('evm_increaseTime', [501]);
+```
+
+<Note>
+This is Anvil-specific. In production, you'd wait for the actual vesting period.
+</Note>
+
+### Step 3: Initialize SDK
+
+```typescript
+const shedSdk = new CowShedSdk({
+  factoryAddress: factory,
+  implementationAddress: implementation,
+  chainId: 1,
+  proxyCreationCode: proxyInitCode,
+});
+```
+
+### Step 4: Create Swap Order
+
+```typescript
+const validTo = Math.floor(new Date().getTime() / 1000) + 7200;
+
+const order: Order = {
+  sellToken: WETH,
+  buyToken: COW,
+  receiver: userAddr,           // Tokens go directly to user
+  sellAmount: amount,           // Sell claimed WETH
+  buyAmount: parseEther('1000'), // Minimum COW to receive
+  validTo,
+  appData: '',
+  feeAmount: 0n,
+  kind: OrderKind.SELL,
+  partiallyFillable: true,
+  sellTokenBalance: OrderBalance.ERC20,
+  buyTokenBalance: OrderBalance.ERC20,
+};
+```
+
+### Step 5: Define Pre-Hook to Claim Tokens
+
+The pre-hook calls the vesting contract's `claim()` function:
+
+```typescript
+const calls: ICall[] = [
+  {
+    target: vestingContractAddr,
+    callData: fnCalldata(
+      'claim(address)',
+      ABI_CODER.encode(['address'], [userAddr])
+    ),
+    value: 0n,
+    isDelegateCall: false,
+    allowFailure: false,
+  },
+];
+```
+
+<Note>
+Llama Pay's `claim()` function transfers vested tokens directly to the specified address (user).
+</Note>
+
+### Step 6: Sign Hook Intent
+
+```typescript
+const nonce = ethers.encodeBytes32String('first');
+
+// Create the hash to sign
+const hashToSign = shedSdk.hashToSignWithUser(
+  calls,
+  nonce,
+  BigInt(validTo),
+  userAddr
+);
+
+// Sign with user's private key
+const signature = user.signingKey.sign(hashToSign);
+console.log('Signature:', signature.r, signature.s, signature.v);
+
+const encodedSignature = CowShedSdk.encodeEOASignature(
+  BigInt(signature.r),
+  BigInt(signature.s),
+  signature.v
+);
+```
+
+### Step 7: Encode Hooks Calldata
+
+```typescript
+const hooksCalldata = CowShedSdk.encodeExecuteHooksForFactory(
+  calls,
+  nonce,
+  BigInt(validTo),
+  userAddr,
+  encodedSignature
+);
+
+const hooks = {
+  pre: [
+    {
+      target: factory,
+      callData: hooksCalldata,
+      gasLimit: '1000000000',
+    },
+  ],
+};
+```
+
+### Step 8: Approve WETH
+
+Approve WETH to CoW Swap's vault relayer:
+
+```typescript
+const approveTx = await approveToken(
+  provider,
+  WETH,
+  userAddr,
+  VAULT_RELAYER,
+  amount
+);
+console.log('Approved WETH:', approveTx?.hash);
+```
+
+<Warning>
+Approve **before** creating the order. The swap will fail if WETH isn't approved.
+</Warning>
+
+### Step 9: Create and Settle Order
+
+```typescript
+// Create the order with pre-hooks
+const orderTx = await createOrder(provider, order, hooks, userAddr);
+console.log('Create order tx:', orderTx?.hash);
+
+// Settle the order (executes claim + swap)
+const settleTx = await settleOrder(provider, order, hooks, userAddr);
+console.log('Settle tx:', settleTx?.hash);
+```
+
+### Step 10: Verify Claim Happened
+
+```typescript
+// Check for claim event in settlement logs
+const claimedLog = settleTx!.logs.find((log) => {
+  return log.address.toLowerCase() === vestingContractAddr.toLowerCase();
+});
+
+if (claimedLog === undefined) {
+  console.log('Claim didnt happen!!!');
+  return;
+}
+
+// Decode the claim amount and recipient
+const amountClaimed = ABI_CODER.decode(['uint256'], claimedLog.data)[0];
+const recipient = ABI_CODER.decode(['address'], claimedLog.topics[1])[0];
+
+console.log(`${recipient} claimed ${amountClaimed} tokens`);
+
+// Check final COW balance
+const receiverCOWBalance = await getTokenBalance(provider, COW, userAddr);
+console.log('COW balance after swap:', receiverCOWBalance.toString());
+```
+
+## Execution Flow
+
+<Steps>
+  <Step title="Setup (One-time)">
+    - Vesting contract already exists
+    - Tokens are vesting over time
+  </Step>
+  <Step title="User Preparation">
+    - Approve WETH to CoW Swap
+    - Sign pre-hooks intent
+  </Step>
+  <Step title="Order Submission">
+    - Create CoW Swap order (WETH → COW)
+    - Attach signed pre-hooks
+    - Submit to settlement contract
+  </Step>
+  <Step title="Pre-Hook Execution">
+    - Proxy is deployed (if first time)
+    - Call vesting contract's `claim()`
+    - WETH transfers to user's address
+  </Step>
+  <Step title="Swap Execution">
+    - CoW Swap transfers WETH from user
+    - Executes the swap
+    - Sends COW to user
+  </Step>
+</Steps>
+
+## Complete Example
+
+Full source code: [`examples/claimAndSwap.ts`](https://github.com/cowprotocol/cow-shed/blob/main/examples/claimAndSwap.ts)
+
+```bash
+# Run the example
+yarn ts-node examples/claimAndSwap.ts
+```
+
+## Llama Pay Integration Details
+
+### Vesting Contract Creation
+
+The example includes a helper to create vesting contracts:
+
+```typescript
+export const createVest = async (
+  provider: ethers.JsonRpcProvider,
+  funder: string,
+  token: string,
+  receiver: string,
+  amount: bigint,
+  vesting_duration: bigint
+) => {
+  // Approve factory to spend tokens
+  await approveToken(provider, token, funder, VESTING_ESCROW_FACTORY, amount);
+  
+  // Deploy vesting contract
+  const signer = await getSigner(provider, funder);
+  const tx = await signer.sendTransaction({
+    to: VESTING_ESCROW_FACTORY,
+    data: fnCalldata(
+      'deploy_vesting_contract(address,address,uint256,uint256)',
+      ABI_CODER.encode(
+        ['address', 'address', 'uint256', 'uint256'],
+        [token, receiver, amount, vesting_duration]
+      )
+    ),
+  });
+  
+  const receipt = await tx.wait();
+  if (receipt?.status === 0) {
+    throw new Error('Vesting contract creation failed');
+  }
+  
+  // Extract contract address from logs
+  const vestingContractAddr = getAddress(
+    hexDataSlice(receipt?.logs[0].topics[2] as string, 12)
+  );
+  
+  return vestingContractAddr;
+};
+```
+
+### Claim Function
+
+Llama Pay's claim function signature:
+
+```solidity
+function claim(address beneficiary) external;
+```
+
+- Can be called by anyone (permissionless)
+- Transfers all vested tokens to beneficiary
+- Emits a `Claimed` event
+
+## Use Cases Beyond Llama Pay
+
+This pattern works for any claim + swap scenario:
+
+<CardGroup cols={2}>
+  <Card title="Airdrop Claims" icon="gift">
+    Claim airdrops and immediately swap to desired token
+  </Card>
+  <Card title="Yield Harvesting" icon="seedling">
+    Claim yield rewards and swap to stablecoin
+  </Card>
+  <Card title="LP Rewards" icon="coins">
+    Claim LP rewards and swap to reinvest
+  </Card>
+  <Card title="Staking Rewards" icon="piggy-bank">
+    Claim staking rewards and auto-compound
+  </Card>
+</CardGroup>
+
+## Key Takeaways
+
+<AccordionGroup>
+  <Accordion title="Atomic operations">
+    - Claim and swap happen in one settlement
+    - Either both succeed or both revert
+    - No intermediate state where tokens sit idle
+    - Reduces exposure to price volatility
+  </Accordion>
+  <Accordion title="Gas efficiency">
+    - Fewer transactions = lower gas costs
+    - No need for separate claim transaction
+    - User only pays settlement gas
+  </Accordion>
+  <Accordion title="Security benefits">
+    - Tokens never sit in user wallet between operations
+    - Reduced attack surface
+    - Signed hooks ensure only authorized claims
+  </Accordion>
+  <Accordion title="Generalization">
+    This pattern applies to any protocol with:
+    - Claimable tokens/rewards
+    - Standard ERC20 outputs
+    - Permissionless claim functions
+  </Accordion>
+</AccordionGroup>
+
+## Comparison: With vs Without Hooks
+
+### Without Hooks (Traditional Flow)
+
+```typescript
+// Transaction 1: Claim tokens
+await vestingContract.claim(userAddr);
+
+// Wait for confirmation...
+
+// Transaction 2: Approve tokens
+await wethContract.approve(VAULT_RELAYER, amount);
+
+// Wait for confirmation...
+
+// Transaction 3: Create order
+await createOrder(...);
+
+// Wait for settlement...
+
+// Transaction 4: Settlement happens
+```
+
+**Total**: 3+ user transactions, multiple confirmations, price risk between steps
+
+### With Hooks (COW Shed Flow)
+
+```typescript
+// Transaction 1: Approve tokens + create order with signed hooks
+await approveToken(...);
+await createOrder(provider, order, hooks, userAddr);
+
+// Transaction 2: Settlement (executes claim + swap atomically)
+await settleOrder(...);
+```
+
+**Total**: 2 transactions, atomic execution, no intermediate price risk
+
+## Related Examples
+
+<CardGroup cols={2}>
+  <Card title="Mint DAI & Swap" icon="coins" href="/examples/mint-dai-swap">
+    Another pre-hook example with Maker protocol
+  </Card>
+  <Card title="Swap & Bridge" icon="bridge" href="/examples/swap-bridge">
+    Learn about post-hooks and Weiroll
+  </Card>
+</CardGroup>
+
+## Further Reading
+
+- [Llama Pay Documentation](https://docs.llamapay.io/)
+- [Pre-Hooks Concept](/concepts/hooks#pre-hooks)
+- [Hook Signing](/concepts/signatures)

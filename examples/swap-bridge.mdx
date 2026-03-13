@@ -1,0 +1,429 @@
+---
+title: Swap and Bridge
+description: Learn how to use post-hooks with Weiroll to bridge swapped tokens to another chain with exact amounts
+---
+
+## Overview
+
+This example demonstrates **cross-chain bridging** using post-hooks and Weiroll. After swapping WETH to USDC on Ethereum, post-hooks automatically bridge the exact swap output to Gnosis Chain.
+
+## Use Case
+
+**Problem**: You want to swap tokens on Ethereum and immediately bridge them to another chain, but you don't know the exact output amount in advance.
+
+**Solution**: Use COW Shed post-hooks with Weiroll to:
+1. Set the proxy as the receiver for swapped tokens
+2. Query the exact balance after the swap
+3. Bridge the full amount to Gnosis Chain
+
+All in a single transaction!
+
+## Key Concepts
+
+### Post-Hooks for Output Handling
+
+Post-hooks execute **after** the swap completes, allowing you to:
+- Process the exact swap output amount
+- Bridge tokens cross-chain
+- Stake or deposit swapped tokens
+- Distribute tokens to multiple addresses
+
+### Weiroll for Dynamic Amounts
+
+[Weiroll](https://github.com/weiroll/weiroll) is a VM for scripting operations with runtime values. It's essential here because:
+- Swap output amounts are unknown at order creation time
+- We need to query the balance and use it in the bridge call
+- Weiroll handles state management between operations
+
+### Proxy as Receiver
+
+Setting `receiver: proxyAddress` in the order means:
+- Swapped tokens go directly to your proxy
+- Post-hooks can access and use these tokens
+- You maintain full control (proxy is user-owned)
+
+## Implementation
+
+### Step 1: Initialize SDK and Compute Proxy
+
+```typescript
+import { CowShedSdk, ICall } from '@cowprotocol/cow-shed';
+import { ethers } from 'ethers';
+
+const shedSdk = new CowShedSdk({
+  factoryAddress: factory,
+  implementationAddress: implementation,
+  chainId: 1,
+  proxyCreationCode: proxyInitCode,
+});
+
+const user = signers[1];
+const userAddr = await user.getAddress();
+
+// Compute deterministic proxy address
+const proxyAddress = shedSdk.computeProxyAddress(userAddr);
+console.log('Proxy address:', proxyAddress);
+```
+
+### Step 2: Prepare Tokens for Swap
+
+```typescript
+const amt = ethers.parseEther('1'); // 1 WETH
+
+// Wrap ETH to WETH
+const wrapTx = await wrapEther(provider, userAddr, amt);
+console.log('ETH wrapped:', wrapTx?.hash);
+
+// Approve WETH to CoW Swap's vault relayer
+const approveTx = await approveToken(
+  provider,
+  WETH,
+  userAddr,
+  VAULT_RELAYER,
+  amt
+);
+console.log('WETH approved:', approveTx?.hash);
+```
+
+### Step 3: Create Order with Proxy as Receiver
+
+```typescript
+const GNOSIS_CHAIN_BRIDGE = '0x88ad09518695c6c3712AC10a214bE5109a655671';
+const buyAmount = 10_000_000n; // Minimum USDC to receive
+const validTo = Math.floor(new Date().getTime() / 1000) + 7200;
+
+const order: Order = {
+  sellToken: WETH,
+  buyToken: USDC,
+  receiver: proxyAddress,  // ← Tokens go to proxy!
+  sellAmount: amt,
+  buyAmount,
+  validTo,
+  appData: '',
+  feeAmount: 0n,
+  kind: OrderKind.SELL,
+  partiallyFillable: true,
+  sellTokenBalance: OrderBalance.ERC20,
+  buyTokenBalance: OrderBalance.ERC20,
+};
+```
+
+<Note>
+Setting `receiver: proxyAddress` is crucial for post-hooks to access the swapped tokens.
+</Note>
+
+### Step 4: Build Weiroll Commands
+
+Weiroll commands script the post-hook operations:
+
+```typescript
+import {
+  CallType,
+  END_OF_ARGS,
+  encodeCommand,
+  encodeFlag,
+  encodeInput,
+  encodeInputArg,
+  encodeWeirollExecuteCall,
+} from './weiroll';
+import { hexZeroPad } from 'ethers/lib/utils';
+
+const weirollCommands = [
+  // Command 1: Query USDC balance of proxy
+  encodeCommand(
+    fnSelector('balanceOf(address)'),
+    encodeFlag(false, false, CallType.StaticCall), // Static call
+    encodeInput(
+      encodeInputArg(true, 0), // Read address from state[0]
+      END_OF_ARGS,
+      END_OF_ARGS,
+      END_OF_ARGS,
+      END_OF_ARGS,
+      END_OF_ARGS
+    ),
+    encodeInputArg(true, 1), // Write result to state[1]
+    USDC                      // Target: USDC token contract
+  ),
+  
+  // Command 2: Bridge the full balance
+  encodeCommand(
+    fnSelector('relayTokens(address,address,uint256)'),
+    encodeFlag(false, false, CallType.Call), // Regular call
+    encodeInput(
+      encodeInputArg(true, 2), // Token address from state[2]
+      encodeInputArg(true, 0), // User address from state[0]
+      encodeInputArg(true, 1), // Balance from state[1] ← output of balanceOf
+      END_OF_ARGS,
+      END_OF_ARGS,
+      END_OF_ARGS
+    ),
+    END_OF_ARGS,              // Ignore output
+    GNOSIS_CHAIN_BRIDGE       // Target: Bridge contract
+  ),
+];
+```
+
+### Step 5: Initialize Weiroll State
+
+The state array provides inputs to Weiroll commands:
+
+```typescript
+const state = [
+  hexZeroPad(proxyAddress, 32), // state[0]: Address to query balance of
+  '0x',                         // state[1]: Will store balance output
+  hexZeroPad(USDC, 32),        // state[2]: USDC token address
+];
+```
+
+<Warning>
+Weiroll state indices must match the `encodeInputArg()` references in commands.
+</Warning>
+
+### Step 6: Define Post-Hook Calls
+
+```typescript
+const calls: ICall[] = [
+  // 1. Approve bridge to spend USDC
+  {
+    target: USDC,
+    callData: fnCalldata(
+      'approve(address,uint256)',
+      ABI_CODER.encode(
+        ['address', 'uint256'],
+        [GNOSIS_CHAIN_BRIDGE, MaxUint256]
+      )
+    ),
+    value: 0n,
+    isDelegateCall: false,
+    allowFailure: false,
+  },
+  // 2. Execute Weiroll script to bridge
+  {
+    target: WEIROLL_ADDRESS,
+    callData: encodeWeirollExecuteCall(weirollCommands, state),
+    value: 0n,
+    isDelegateCall: true,  // ← Delegate call for Weiroll
+    allowFailure: false,
+  },
+];
+```
+
+<Note>
+The Weiroll call uses `isDelegateCall: true` so it executes in the proxy's context and can access proxy balances.
+</Note>
+
+### Step 7: Sign Hook Intent
+
+```typescript
+const nonce = ethers.encodeBytes32String('first');
+
+// Create the hash to sign
+const hashToSign = shedSdk.hashToSignWithUser(
+  calls,
+  nonce,
+  BigInt(validTo),
+  userAddr
+);
+
+// Sign with user's private key
+const signature = user.signingKey.sign(hashToSign);
+
+const encodedSignature = CowShedSdk.encodeEOASignature(
+  BigInt(signature.r),
+  BigInt(signature.s),
+  signature.v
+);
+```
+
+### Step 8: Estimate Gas for Post-Hooks
+
+```typescript
+const hooksCalldata = CowShedSdk.encodeExecuteHooksForFactory(
+  calls,
+  nonce,
+  BigInt(validTo),
+  userAddr,
+  encodedSignature
+);
+
+// Mock balance for gas estimation
+const prevBalance = await getTokenBalance(provider, USDC, proxyAddress);
+const newBalance = buyAmount * 2n;
+
+const gasLimit = (
+  await estimateGasForExecuteHooks(
+    provider,
+    factory,
+    hooksCalldata,
+    () => mockUsdcBalance(provider, proxyAddress, newBalance),
+    () => mockUsdcBalance(provider, proxyAddress, prevBalance)
+  )
+).toString();
+```
+
+<Note>
+Gas estimation requires mocking the post-swap balance since hooks execute after the swap.
+</Note>
+
+### Step 9: Create and Settle Order
+
+```typescript
+const hooks = {
+  post: [
+    {
+      target: factory,
+      callData: hooksCalldata,
+      gasLimit
+    }
+  ],
+};
+
+// Create order
+const orderTx = await createOrder(provider, order, hooks, userAddr);
+console.log('Create order tx:', orderTx?.hash);
+
+// Settle order (executes swap + post-hooks)
+const settleTx = await settleOrder(provider, order, hooks, userAddr);
+console.log('Settle tx:', settleTx?.hash);
+```
+
+### Step 10: Verify Bridge Transaction
+
+```typescript
+// Check for TokensBridgingInitiated event
+const bridgeInitiatedLog = settleTx!.logs.find(
+  (log) =>
+    log.topics[0] ===
+    '0x59a9a8027b9c87b961e254899821c9a276b5efc35d1f7409ea4f291470f1629a' &&
+    log.address.toLowerCase() === GNOSIS_CHAIN_BRIDGE.toLowerCase()
+);
+
+if (bridgeInitiatedLog === undefined) {
+  console.log('Bridge didnt happen!!!');
+  return;
+}
+
+const tokenBridged = ABI_CODER.decode(
+  ['address'],
+  bridgeInitiatedLog.topics[1]
+)[0];
+const amountBridged = ABI_CODER.decode(['uint'], bridgeInitiatedLog.data)[0];
+const sender = ABI_CODER.decode(['address'], bridgeInitiatedLog.topics[2])[0];
+
+console.log({ tokenBridged, amountBridged, sender, proxyAddress });
+```
+
+## Execution Flow
+
+<Steps>
+  <Step title="User Preparation">
+    - Wrap ETH to WETH
+    - Approve WETH to CoW Swap
+  </Step>
+  <Step title="Order Submission">
+    - Create order with proxy as receiver
+    - Attach signed post-hooks
+    - Submit to settlement contract
+  </Step>
+  <Step title="Swap Execution">
+    - CoW Swap transfers WETH from user
+    - Executes swap
+    - Sends USDC to **proxy address**
+  </Step>
+  <Step title="Post-Hook Execution">
+    - Approve bridge to spend USDC
+    - Execute Weiroll script:
+      - Query exact USDC balance
+      - Bridge full amount to Gnosis Chain
+  </Step>
+  <Step title="Bridge Completion">
+    - Bridge contract locks tokens on Ethereum
+    - Tokens mint on Gnosis Chain to user
+  </Step>
+</Steps>
+
+## Complete Example
+
+Full source code: [`examples/swapAndBridge.ts`](https://github.com/cowprotocol/cow-shed/blob/main/examples/swapAndBridge.ts)
+
+```bash
+# Run the example
+yarn ts-node examples/swapAndBridge.ts
+```
+
+## Weiroll State Management
+
+Understanding Weiroll's state array is key:
+
+| Index | Initial Value | After balanceOf | After relayTokens |
+|-------|--------------|-----------------|-------------------|
+| 0 | `proxyAddress` | `proxyAddress` | `proxyAddress` |
+| 1 | `0x` (empty) | `balance` | `balance` |
+| 2 | `USDC` | `USDC` | `USDC` |
+
+- State persists between commands
+- Outputs from one command become inputs to the next
+- Fixed-length values use indices (`encodeInputArg(true, index)`)
+
+## Bridge Integration
+
+The Gnosis Chain bridge requires:
+
+```solidity
+function relayTokens(
+  address token,     // Token to bridge
+  address receiver,  // Recipient on destination chain
+  uint256 amount     // Amount to bridge
+) external;
+```
+
+The post-hook:
+1. Approves the bridge
+2. Calls `relayTokens()` with the runtime balance
+3. Bridge emits `TokensBridgingInitiated` event
+
+## Key Takeaways
+
+<AccordionGroup>
+  <Accordion title="When to use post-hooks">
+    - Processing exact swap output amounts
+    - Bridging tokens cross-chain
+    - Staking or depositing swapped tokens
+    - Multi-step operations after receiving tokens
+  </Accordion>
+  <Accordion title="Why Weiroll?">
+    - Handles runtime/dynamic values
+    - Chains multiple operations
+    - Efficient gas usage
+    - Composable scripting
+  </Accordion>
+  <Accordion title="Proxy as receiver">
+    - Enables post-hook token access
+    - Maintains user ownership (non-custodial)
+    - Can be any address, not just user
+    - Useful for complex routing
+  </Accordion>
+  <Accordion title="Gas estimation">
+    - Post-hooks need mocked balances for estimation
+    - Actual execution gas may differ
+    - Set generous gas limits
+    - Monitor actual usage over time
+  </Accordion>
+</AccordionGroup>
+
+## Related Examples
+
+<CardGroup cols={2}>
+  <Card title="Mint DAI & Swap" icon="coins" href="/examples/mint-dai-swap">
+    Learn about pre-hooks and JIT borrowing
+  </Card>
+  <Card title="Claim & Swap" icon="hand-holding-dollar" href="/examples/claim-swap">
+    Another pre-hook example
+  </Card>
+</CardGroup>
+
+## Further Reading
+
+- [Weiroll Documentation](https://github.com/weiroll/weiroll)
+- [Gnosis Chain Bridge](https://docs.gnosischain.com/bridges/)
+- [Post-Hooks Concept](/concepts/hooks#post-hooks)

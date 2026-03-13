@@ -1,0 +1,334 @@
+---
+title: "COWShedProxy"
+description: "Complete API reference for the COWShedProxy smart contract"
+---
+
+# COWShedProxy Contract
+
+The COWShedProxy is a transparent proxy contract that delegates all calls to the COWShed implementation. It uses the EIP-1967 standard storage slot for the implementation address and implements a transparent proxy pattern where the admin can call upgrade functions directly while all other calls are delegated.
+
+**Source:** `~/workspace/source/src/COWShedProxy.sol`
+
+**Inherits:** `COWShedStorage`, `Proxy` (OpenZeppelin)
+
+---
+
+## Immutable Variables
+
+### ADMIN
+
+```solidity
+address internal immutable ADMIN
+```
+
+The admin address of the proxy. This is stored as an immutable variable for gas optimization.
+
+<Note>
+  The admin is set in the constructor and cannot be changed. This is the address that can upgrade the implementation and access admin functions.
+</Note>
+
+**See also:** `COWShedProxy.sol:13`
+
+---
+
+## Constructor
+
+```solidity
+constructor(address implementation, address admin_)
+```
+
+Creates a new COWShedProxy with the specified implementation and admin.
+
+<ParamField path="implementation" type="address">
+  The address of the COWShed implementation contract to delegate calls to
+</ParamField>
+
+<ParamField path="admin_" type="address">
+  The admin address that will own and control this proxy
+</ParamField>
+
+**Process:**
+1. Sets `ADMIN` immutable variable to `admin_`
+2. Stores `implementation` in the EIP-1967 implementation storage slot
+
+<Note>
+  The implementation is stored in slot `0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc` as defined by EIP-1967.
+</Note>
+
+**See also:** `COWShedProxy.sol:15`
+
+---
+
+## Admin Functions
+
+### updateImplementation
+
+```solidity
+function updateImplementation(address newImplementation) external
+```
+
+Updates the implementation contract address. Uses a transparent proxy pattern - only the admin can actually update, all other callers are proxied through.
+
+<ParamField path="newImplementation" type="address">
+  The address of the new implementation contract
+</ParamField>
+
+**Access Control:**
+- If caller is `ADMIN`: Updates the implementation and emits `Upgraded` event
+- If caller is anyone else: Transparently delegates to the current implementation
+
+**Emits:** `Upgraded(address indexed newImplementation)` - Only when called by admin
+
+<Warning>
+  Ensure the new implementation is compatible with the existing storage layout to avoid storage collisions.
+</Warning>
+
+**See also:** `COWShedProxy.sol:24`
+
+---
+
+### admin
+
+```solidity
+function admin() external returns (address)
+```
+
+Returns the admin address. Uses a transparent proxy pattern.
+
+<ResponseField name="admin" type="address">
+  The admin address of the proxy
+</ResponseField>
+
+**Access Control:**
+- If caller is the proxy itself (`address(this)`): Returns the `ADMIN` immutable variable
+- If caller is anyone else: Transparently delegates to the implementation
+
+<Note>
+  This design allows the implementation contract to query the admin address by calling `this.admin()` internally, while external callers are proxied through.
+</Note>
+
+**See also:** `COWShedProxy.sol:39`
+
+---
+
+## Proxy Mechanism
+
+### fallback
+
+```solidity
+fallback() external payable override
+```
+
+The fallback function that delegates all unmatched calls to the implementation contract.
+
+**Process:**
+1. Calls `_checkInitialization()` to ensure the proxy has been initialized
+2. Delegates the call to the implementation via `_fallback()`
+
+**Errors:**
+- `InvalidInitialization()` - If the proxy hasn't been initialized and the call is not `initialize()`
+
+**See also:** `COWShedProxy.sol:52`
+
+---
+
+### receive
+
+```solidity
+receive() external payable
+```
+
+Allows the proxy to receive ETH directly.
+
+**Process:**
+1. Calls `_checkInitialization()` to ensure the proxy has been initialized
+2. Delegates to the implementation via `_fallback()`
+
+**Errors:**
+- `InvalidInitialization()` - If the proxy hasn't been initialized
+
+**See also:** `COWShedProxy.sol:57`
+
+---
+
+## Internal Functions
+
+### _implementation
+
+```solidity
+function _implementation() internal view override returns (address implementation)
+```
+
+Returns the current implementation address from the EIP-1967 storage slot.
+
+<ResponseField name="implementation" type="address">
+  The current implementation contract address
+</ResponseField>
+
+**Implementation:**
+```solidity
+assembly {
+    implementation := sload(IMPLEMENTATION_STORAGE_SLOT)
+}
+```
+
+**See also:** `COWShedProxy.sol:62`
+
+---
+
+### _checkInitialization
+
+```solidity
+function _checkInitialization() internal view
+```
+
+Verifies that the proxy has been initialized before allowing calls.
+
+**Behavior:**
+- If the proxy is not initialized AND the function selector is not `COWShed.initialize.selector`, reverts with `InvalidInitialization()`
+- Allows `initialize()` to be called even when not initialized
+- Once initialized, allows all calls
+
+**Errors:**
+- `InvalidInitialization()` - If proxy is not initialized and caller is not trying to initialize
+
+<Note>
+  This prevents the proxy from being used before proper initialization, protecting against misconfiguration.
+</Note>
+
+**See also:** `COWShedProxy.sol:68`
+
+---
+
+## Events
+
+### Upgraded
+
+```solidity
+event Upgraded(address indexed implementation)
+```
+
+Emitted when the implementation is upgraded by the admin.
+
+<ParamField path="implementation" type="address" indexed>
+  The new implementation contract address
+</ParamField>
+
+**See also:** `COWShedProxy.sol:11`
+
+---
+
+## Errors
+
+### InvalidInitialization
+
+```solidity
+error InvalidInitialization()
+```
+
+Thrown when attempting to call the proxy before it has been initialized, except when calling the `initialize()` function itself.
+
+**See also:** `COWShedProxy.sol:9`
+
+---
+
+## Transparent Proxy Pattern
+
+The COWShedProxy implements a transparent proxy pattern with the following rules:
+
+<Expandable title="Admin Access Pattern">
+
+**For `updateImplementation(address)`:**
+- **Admin calls it**: Updates the implementation storage slot and emits `Upgraded`
+- **Anyone else calls it**: Delegates to the implementation (which will likely revert with access control)
+
+**For `admin()`:**
+- **Proxy itself calls it** (via `this.admin()`): Returns the `ADMIN` immutable
+- **Anyone else calls it**: Delegates to the implementation
+
+This pattern allows the implementation to query its own admin by calling `this.admin()` internally.
+
+</Expandable>
+
+<Expandable title="Initialization Protection">
+
+The proxy cannot be used until initialized:
+
+1. **Before initialization**: Only `initialize()` can be called
+2. **After initialization**: All functions can be called
+3. **Purpose**: Prevents the proxy from being used in an unconfigured state
+
+The factory calls `initialize(address(this))` immediately after deployment.
+
+</Expandable>
+
+<Expandable title="Storage Layout">
+
+The proxy uses EIP-1967 standard storage slots to avoid collisions:
+
+- **Implementation slot**: `0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc`
+- **State slot** (from COWShedStorage): `keccak256("COWShed.State")`
+
+The `ADMIN` is stored as an immutable variable, not in storage, for gas efficiency.
+
+</Expandable>
+
+---
+
+## Usage Examples
+
+### Upgrading Implementation (Admin)
+
+```solidity
+// Deploy new implementation
+COWShed newImpl = new COWShed();
+
+// Admin can upgrade directly
+proxy.updateImplementation(address(newImpl));
+// Emits: Upgraded(address(newImpl))
+```
+
+### Calling Implementation Functions
+
+```solidity
+// Non-admin users call functions normally
+COWShed(payable(proxyAddress)).executeHooks(calls, nonce, deadline, signature);
+
+// The proxy delegates to the implementation
+// All state changes are stored in the proxy's storage
+```
+
+### Querying Admin from Implementation
+
+```solidity
+// Inside COWShed implementation:
+function _admin() internal view returns (address) {
+    return IAdminView(address(this)).admin();
+}
+
+// When called from implementation context:
+// 1. this.admin() makes an external call to the proxy
+// 2. msg.sender == address(this) (the proxy)
+// 3. Proxy returns ADMIN immutable
+// 4. Implementation receives the admin address
+```
+
+---
+
+## Architecture Notes
+
+<Note>
+  **Immutable Admin**: The admin cannot be changed after deployment. If admin rotation is needed, it must be handled at the implementation level.
+</Note>
+
+<Note>
+  **Gas Optimization**: Storing admin as an immutable saves ~2100 gas per admin check compared to storage-based admin patterns.
+</Note>
+
+<Warning>
+  **Initialization Required**: The proxy will revert all calls (except `initialize()`) until it has been initialized by the factory.
+</Warning>
+
+<Note>
+  **EIP-1967 Compliance**: Uses standard storage slots for implementation, making it compatible with tools and indexers that expect EIP-1967 proxies.
+</Note>

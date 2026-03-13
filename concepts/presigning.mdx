@@ -1,0 +1,518 @@
+---
+title: 'Pre-Signing'
+description: 'On-chain signature alternative for hook execution'
+---
+
+## What Is Pre-Signing?
+
+Pre-signing is an **on-chain alternative** to off-chain EIP-712 signatures. Instead of signing a message with your private key, you submit an on-chain transaction that "pre-approves" a specific set of hooks for execution.
+
+Once pre-signed, anyone can trigger the execution of those hooks (subject to the deadline) without needing the original signature.
+
+## When to Use Pre-Signing
+
+Pre-signing is useful when:
+
+<CardGroup cols={2}>
+  <Card title="Smart Contract Wallets" icon="wallet">
+    Safe (Gnosis Safe) and other multi-sigs can pre-sign operations, then have a relayer execute them without collecting signatures again.
+  </Card>
+  
+  <Card title="Scheduled Operations" icon="clock">
+    Pre-approve hooks to run at a future time. Anyone can trigger execution when conditions are met.
+  </Card>
+  
+  <Card title="Delegation" icon="users">
+    Allow a trusted operator to execute specific hooks without giving them your private keys.
+  </Card>
+  
+  <Card title="Gas Optimization" icon="gauge">
+    Pay gas once to pre-sign, then execute later when gas is cheaper (executor pays execution gas).
+  </Card>
+</CardGroup>
+
+<Info>
+**Trade-off**: Pre-signing requires an on-chain transaction (costs gas upfront), while standard signatures are free off-chain operations.
+</Info>
+
+## Pre-Sign Storage Architecture
+
+Pre-signed state is stored in a **separate contract** (`PreSignStateStorage`) to enable easy invalidation.
+
+### Storage Contract
+
+From `PreSignStateStorage.sol:8-38`:
+
+```solidity PreSignStateStorage.sol
+contract PreSignStateStorage is IPreSignStorage {
+    event PreSigned(bytes32 indexed hash, bool signed);
+
+    error OnlyCowShed();
+
+    address public immutable cowShed;
+
+    mapping(bytes32 => bool) public presignedHashes;
+
+    modifier onlyCowShed() {
+        if (msg.sender != cowShed) {
+            revert OnlyCowShed();
+        }
+        _;
+    }
+
+    constructor(address _cowShed) {
+        cowShed = _cowShed;
+    }
+
+    function setPreSigned(bytes32 hash, bool signed) external onlyCowShed {
+        presignedHashes[hash] = signed;
+        emit PreSigned(hash, signed);
+    }
+
+    function isPreSigned(bytes32 hash) external view returns (bool) {
+        return presignedHashes[hash];
+    }
+}
+```
+
+### Why Separate Storage?
+
+Storing pre-signs in a separate contract enables **bulk invalidation**:
+
+```solidity
+// Invalidate ALL pre-signatures at once
+await cowShed.resetPreSignStorage();
+```
+
+This deploys a fresh `PreSignStateStorage` contract, instantly invalidating all pending pre-signed hooks without affecting nonces or other state.
+
+## Setting Up Pre-Sign Storage
+
+Before you can use pre-signing, you must initialize the storage contract.
+
+### Option 1: Reset (Recommended)
+
+From `COWShed.sol:66-71`:
+
+```solidity COWShed.sol
+function resetPreSignStorage() external onlyAdmin returns (IPreSignStorage) {
+    PreSignStateStorage storageContract = new PreSignStateStorage(address(this));
+    _state().preSignStorage = storageContract;
+    emit PreSignStorageChanged(address(storageContract));
+    return storageContract;
+}
+```
+
+**Usage:**
+```typescript
+// Initialize or reset pre-sign storage
+const tx = await cowShed.resetPreSignStorage();
+const receipt = await tx.wait();
+
+// Get the new storage address from the event
+const event = receipt.logs.find(
+  log => log.topics[0] === cowShed.interface.getEvent('PreSignStorageChanged').topicHash
+);
+const storageAddress = event.args.newStorage;
+
+console.log(`Pre-sign storage deployed at ${storageAddress}`);
+```
+
+<Tip>
+**First-Time Setup**: Call `resetPreSignStorage()` once after deploying your COWShed to enable pre-signing functionality.
+</Tip>
+
+### Option 2: Set Custom Storage
+
+From `COWShed.sol:74-78`:
+
+```solidity COWShed.sol
+function setPreSignStorage(IPreSignStorage storageContract) external onlyAdmin returns (IPreSignStorage) {
+    _state().preSignStorage = storageContract;
+    emit PreSignStorageChanged(address(storageContract));
+    return storageContract;
+}
+```
+
+**Usage:**
+```typescript
+// Deploy your own storage contract
+const customStorage = await deployContract('PreSignStateStorage', [cowShedAddress]);
+
+// Link it to your COWShed
+await cowShed.setPreSignStorage(customStorage.address);
+```
+
+<Warning>
+**Admin Only**: Only the COWShed admin can call `resetPreSignStorage()` or `setPreSignStorage()`.
+</Warning>
+
+### Disabling Pre-Signing
+
+To disable pre-signing completely:
+
+```typescript
+// Set storage to address(0)
+await cowShed.setPreSignStorage('0x0000000000000000000000000000000000000000');
+```
+
+From `COWShed.sol:24`:
+```solidity
+IPreSignStorage public constant EMPTY_PRE_SIGN_STORAGE = IPreSignStorage(address(0));
+```
+
+## Pre-Signing Hooks
+
+To pre-sign a set of hooks, call `preSignHooks()` from `COWShed.sol:92-100`:
+
+```solidity COWShed.sol
+function preSignHooks(
+    Call[] calldata calls, 
+    bytes32 nonce, 
+    uint256 deadline, 
+    bool signed
+) external onlyAdmin {
+    bytes32 hash = LibAuthenticatedHooks.executeHooksMessageHash(calls, nonce, deadline);
+
+    IPreSignStorage storageContract = _state().preSignStorage;
+    if (storageContract == EMPTY_PRE_SIGN_STORAGE) {
+        revert PreSignStorageNotSet();
+    }
+    storageContract.setPreSigned(hash, signed);
+}
+```
+
+### Parameters
+
+- **`calls`**: Array of `Call` structs to execute (same as `executeHooks`)
+- **`nonce`**: Unique nonce (same rules as standard signatures)
+- **`deadline`**: Unix timestamp when the pre-signature expires
+- **`signed`**: 
+  - `true` = Approve these hooks for execution
+  - `false` = Revoke approval
+
+### TypeScript Example
+
+```typescript
+import { encodeFunctionData } from 'viem';
+
+// Define the hooks to pre-sign
+const calls = [
+  {
+    target: tokenAddress,
+    value: 0n,
+    callData: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [spenderAddress, amount]
+    }),
+    allowFailure: false,
+    isDelegateCall: false
+  }
+];
+
+const nonce = '0x0000000000000000000000000000000000000000000000000000000000000042';
+const deadline = Math.floor(Date.now() / 1000) + 86400; // 24 hours from now
+
+// Pre-sign the hooks (approve for execution)
+const tx = await cowShed.preSignHooks(calls, nonce, deadline, true);
+await tx.wait();
+
+console.log('Hooks pre-signed successfully');
+```
+
+### Revoking a Pre-Signature
+
+To revoke (invalidate) a pre-signed operation:
+
+```typescript
+// Same parameters, but signed = false
+const tx = await cowShed.preSignHooks(calls, nonce, deadline, false);
+await tx.wait();
+
+console.log('Pre-signature revoked');
+```
+
+<Info>
+Revoking a pre-signature does NOT consume the nonce. You can still use the same nonce with a different signature.
+</Info>
+
+## Checking Pre-Sign Status
+
+Before executing, check if hooks are pre-signed using `isPreSignedHooks()` from `COWShed.sol:86-89`:
+
+```solidity COWShed.sol
+function isPreSignedHooks(
+    Call[] calldata calls, 
+    bytes32 nonce, 
+    uint256 deadline
+) external view returns (bool) {
+    bytes32 hash = LibAuthenticatedHooks.executeHooksMessageHash(calls, nonce, deadline);
+    return _isPreSignedHash(hash);
+}
+```
+
+### TypeScript Example
+
+```typescript
+const isPreSigned = await cowShed.isPreSignedHooks(calls, nonce, deadline);
+
+if (isPreSigned) {
+  console.log('These hooks are pre-signed and ready to execute');
+} else {
+  console.log('Not pre-signed - need to call preSignHooks() first');
+}
+```
+
+## Executing Pre-Signed Hooks
+
+Once hooks are pre-signed, **anyone** can execute them by calling `executePreSignedHooks()` from `COWShed.sol:103-113`:
+
+```solidity COWShed.sol
+function executePreSignedHooks(
+    Call[] calldata calls, 
+    bytes32 nonce, 
+    uint256 deadline
+) external {
+    LibAuthenticatedHooks.verifyDeadline(deadline);
+
+    bytes32 hash = LibAuthenticatedHooks.executeHooksMessageHash(calls, nonce, deadline);
+
+    if (!_isPreSignedHash(hash)) {
+        revert NotPreSigned();
+    }
+
+    _executeCalls(calls, nonce);
+}
+```
+
+### Key Differences from executeHooks()
+
+| Feature | `executeHooks()` | `executePreSignedHooks()` |
+|---------|------------------|---------------------------|
+| **Caller** | Anyone | Anyone |
+| **Signature Required** | Yes (off-chain EIP-712) | No (on-chain pre-sign) |
+| **Pre-Sign Required** | No | Yes |
+| **Admin Approval** | Via signature | Via `preSignHooks()` |
+
+### TypeScript Example
+
+```typescript
+// Anyone can call this, not just the admin
+const tx = await cowShed.executePreSignedHooks(calls, nonce, deadline);
+await tx.wait();
+
+console.log('Pre-signed hooks executed');
+```
+
+<Warning>
+**Nonce Consumption**: Like standard execution, the nonce is consumed when pre-signed hooks execute. The pre-signature cannot be replayed.
+</Warning>
+
+<Tip>
+**Permissionless Execution**: Anyone can trigger `executePreSignedHooks()`. This is useful for relayers, keepers, or automation bots.
+</Tip>
+
+## Complete Pre-Sign Workflow
+
+Here's a full example from setup to execution:
+
+```typescript
+import { createWalletClient, createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+import { privateKeyToAccount } from 'viem/accounts';
+
+// 1. Setup clients
+const account = privateKeyToAccount(adminPrivateKey);
+const walletClient = createWalletClient({
+  account,
+  chain: mainnet,
+  transport: http()
+});
+
+const publicClient = createPublicClient({
+  chain: mainnet,
+  transport: http()
+});
+
+// 2. Initialize pre-sign storage (first time only)
+const initHash = await walletClient.writeContract({
+  address: cowShedAddress,
+  abi: cowShedAbi,
+  functionName: 'resetPreSignStorage'
+});
+await publicClient.waitForTransactionReceipt({ hash: initHash });
+console.log('Pre-sign storage initialized');
+
+// 3. Define hooks to pre-sign
+const calls = [
+  {
+    target: tokenAddress,
+    value: 0n,
+    callData: encodeFunctionData({
+      abi: erc20Abi,
+      functionName: 'transfer',
+      args: [recipientAddress, transferAmount]
+    }),
+    allowFailure: false,
+    isDelegateCall: false
+  }
+];
+
+const nonce = generateRandomNonce();
+const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour
+
+// 4. Pre-sign the hooks (admin transaction)
+const preSignHash = await walletClient.writeContract({
+  address: cowShedAddress,
+  abi: cowShedAbi,
+  functionName: 'preSignHooks',
+  args: [calls, nonce, deadline, true]
+});
+await publicClient.waitForTransactionReceipt({ hash: preSignHash });
+console.log('Hooks pre-signed');
+
+// 5. Verify pre-sign status
+const isPre signed = await publicClient.readContract({
+  address: cowShedAddress,
+  abi: cowShedAbi,
+  functionName: 'isPreSignedHooks',
+  args: [calls, nonce, deadline]
+});
+console.log('Pre-signed:', isPreSigned); // true
+
+// 6. Execute (anyone can call this)
+const executeHash = await walletClient.writeContract({
+  address: cowShedAddress,
+  abi: cowShedAbi,
+  functionName: 'executePreSignedHooks',
+  args: [calls, nonce, deadline]
+});
+await publicClient.waitForTransactionReceipt({ hash: executeHash });
+console.log('Hooks executed!');
+```
+
+## Bulk Invalidation
+
+To invalidate **all pending pre-signatures** at once:
+
+```typescript
+// Deploy a fresh storage contract
+const tx = await cowShed.resetPreSignStorage();
+await tx.wait();
+
+console.log('All pre-signatures invalidated');
+```
+
+This is useful for:
+- **Security incidents**: Instantly revoke all pending operations
+- **Migration**: Clear state when changing strategies
+- **Cleanup**: Remove stale pre-signatures
+
+<Warning>
+**Irreversible**: Resetting storage permanently deletes all pre-signed state. You'll need to re-sign any operations you want to keep.
+</Warning>
+
+## Security Considerations
+
+<Warning>
+**Public Execution**: Anyone can execute pre-signed hooks. Don't pre-sign operations you want to keep private or time-sensitive.
+</Warning>
+
+<Warning>
+**Deadline Management**: Always set reasonable deadlines. Long deadlines increase the window for MEV or unexpected market conditions.
+</Warning>
+
+<Info>
+**Storage Contract Trust**: The `PreSignStateStorage` contract is deployed by your COWShed and only accepts calls from it. This prevents unauthorized pre-signing.
+</Info>
+
+<Tip>
+**Monitor Events**: Listen for `PreSigned(bytes32 indexed hash, bool signed)` events to track all pre-sign activity.
+</Tip>
+
+### Event Monitoring
+
+```typescript
+// Listen for pre-sign events
+const unwatch = publicClient.watchContractEvent({
+  address: preSignStorageAddress,
+  abi: preSignStorageAbi,
+  eventName: 'PreSigned',
+  onLogs: (logs) => {
+    logs.forEach(log => {
+      console.log(`Pre-sign updated:`);
+      console.log(`  Hash: ${log.args.hash}`);
+      console.log(`  Signed: ${log.args.signed}`);
+    });
+  }
+});
+```
+
+## Common Errors
+
+<AccordionGroup>
+  <Accordion title="PreSignStorageNotSet">
+    The pre-sign storage contract hasn't been initialized. Call `resetPreSignStorage()` first.
+    
+    ```typescript
+    await cowShed.resetPreSignStorage();
+    ```
+  </Accordion>
+
+  <Accordion title="NotPreSigned">
+    Attempted to execute hooks that haven't been pre-signed. Call `preSignHooks(..., true)` first.
+    
+    ```typescript
+    await cowShed.preSignHooks(calls, nonce, deadline, true);
+    ```
+  </Accordion>
+
+  <Accordion title="DeadlineElapsed">
+    The pre-signature's deadline has passed. Create a new pre-signature with a fresh deadline.
+  </Accordion>
+
+  <Accordion title="NonceAlreadyUsed">
+    The nonce has already been consumed (either via pre-signed execution or standard execution). Use a new nonce.
+  </Accordion>
+
+  <Accordion title="OnlyCowShed">
+    Attempted to call `setPreSigned()` directly on the storage contract. Only the COWShed contract can modify pre-sign state.
+  </Accordion>
+</AccordionGroup>
+
+## Pre-Signing vs Standard Signatures
+
+| Aspect | Standard Signatures | Pre-Signing |
+|--------|---------------------|-------------|
+| **Gas Cost (Setup)** | Free (off-chain) | ~50,000-100,000 gas |
+| **Gas Cost (Execution)** | Signature verification | No verification needed |
+| **Privacy** | Private until broadcast | Public on-chain |
+| **Revocation** | Revoke nonce | Revoke pre-sign or nonce |
+| **Executor** | Anyone with signature | Anyone (permissionless) |
+| **Smart Contract Friendly** | Requires EIP-1271 | Native support |
+| **Use Case** | Most operations | Automation, delegation, scheduling |
+
+<Tip>
+**Best Practice**: Use standard signatures for routine operations. Use pre-signing when you need permissionless execution or smart contract automation.
+</Tip>
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Signatures" icon="signature" href="/concepts/signatures">
+    Learn about standard EIP-712 signatures
+  </Card>
+  
+  <Card title="Nonces" icon="hashtag" href="/concepts/nonces">
+    Understand nonce management (used in pre-signing too)
+  </Card>
+  
+  <Card title="Hooks" icon="link" href="/concepts/hooks">
+    What gets executed when you trigger pre-signed hooks
+  </Card>
+  
+  <Card title="executePreSignedHooks" icon="code" href="/api/cowshed">
+    API reference for executing pre-signed hooks
+  </Card>
+</CardGroup>

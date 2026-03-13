@@ -1,0 +1,580 @@
+---
+title: "COWShed"
+description: "Complete API reference for the COWShed smart contract"
+---
+
+# COWShed Contract
+
+The COWShed contract is the core implementation contract that provides authenticated hook execution functionality for CoW Protocol orders. It implements the `ICOWAuthHook` interface and provides secure execution of arbitrary calls with signature verification, nonce management, and pre-signing capabilities.
+
+**Source:** `~/workspace/source/src/COWShed.sol`
+
+## State Variables
+
+### VERSION
+
+```solidity
+string public constant VERSION = "2.1.0"
+```
+
+The version string for this COWShed implementation.
+
+### EMPTY_PRE_SIGN_STORAGE
+
+```solidity
+IPreSignStorage public constant EMPTY_PRE_SIGN_STORAGE = IPreSignStorage(address(0))
+```
+
+Constant representing an empty/unset pre-sign storage contract.
+
+## Core Functions
+
+### initialize
+
+```solidity
+function initialize(address factory) external
+```
+
+Initializes the COWShed proxy with the factory address as the initial trusted executor. Can only be called once.
+
+<ParamField path="factory" type="address">
+  The address of the COWShedFactory contract that will be set as the trusted executor
+</ParamField>
+
+<Note>
+  This function can only be called once. Subsequent calls will revert with `AlreadyInitialized()`.
+</Note>
+
+**Emits:** `TrustedExecutorChanged(address(0), factory)`
+
+**Errors:**
+- `AlreadyInitialized()` - If the contract has already been initialized
+
+---
+
+### executeHooks
+
+```solidity
+function executeHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline,
+    bytes calldata signature
+) external
+```
+
+Executes a set of calls after authenticating the signature, verifying the nonce hasn't been used, and checking the deadline hasn't passed. This is the primary function for executing authenticated hooks.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to execute. Each call includes target, value, callData, allowFailure, and isDelegateCall flags
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce to prevent replay attacks. This nonce will be marked as used
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Unix timestamp after which the signature is no longer valid
+</ParamField>
+
+<ParamField path="signature" type="bytes">
+  EIP-712 signature from the admin authorizing these hooks
+</ParamField>
+
+**Access:** Anyone can call this function if they have a valid signature from the admin
+
+**Errors:**
+- `InvalidSignature()` - If the signature verification fails
+- `NonceAlreadyUsed()` - If the nonce has already been consumed
+
+**See also:** `ICOWAuthHook.sol:17`
+
+---
+
+### executePreSignedHooks
+
+```solidity
+function executePreSignedHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline
+) external
+```
+
+Executes a set of hooks that have been pre-signed on-chain using `preSignHooks()`. This allows for gasless execution patterns.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to execute
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce for the hooks
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Unix timestamp deadline for execution
+</ParamField>
+
+**Access:** Anyone can call this function if the hooks have been pre-signed by the admin
+
+**Errors:**
+- `NotPreSigned()` - If the hooks haven't been pre-signed
+- `NonceAlreadyUsed()` - If the nonce has already been consumed
+
+**See also:** `COWShed.sol:103`
+
+---
+
+### trustedExecuteHooks
+
+```solidity
+function trustedExecuteHooks(Call[] calldata calls) external onlyTrustedRole
+```
+
+Executes arbitrary calls without signature verification. Only callable by the admin or trusted executor.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to execute
+</ParamField>
+
+**Access:** Only admin or trusted executor
+
+**Errors:**
+- `OnlyTrustedRole()` - If caller is neither admin nor trusted executor
+
+<Warning>
+  This function bypasses signature verification and should only be callable by highly trusted addresses.
+</Warning>
+
+**See also:** `COWShed.sol:117`
+
+---
+
+## Pre-Signing Functions
+
+### preSignHooks
+
+```solidity
+function preSignHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline,
+    bool signed
+) external onlyAdmin
+```
+
+Pre-signs a set of hooks on-chain, allowing them to be executed later without an off-chain signature. Can also revoke pre-signatures by setting `signed` to false.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to pre-sign
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce for the hooks
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Unix timestamp deadline
+</ParamField>
+
+<ParamField path="signed" type="bool">
+  True to pre-sign, false to revoke a pre-signature
+</ParamField>
+
+**Access:** Only admin
+
+**Errors:**
+- `OnlyAdmin()` - If caller is not the admin
+- `PreSignStorageNotSet()` - If pre-sign storage has not been initialized
+
+**See also:** `COWShed.sol:92`
+
+---
+
+### isPreSignedHooks
+
+```solidity
+function isPreSignedHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline
+) external view returns (bool)
+```
+
+Checks if a set of hooks has been pre-signed.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to check
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Nonce for the hooks
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Deadline for the hooks
+</ParamField>
+
+<ResponseField name="signed" type="bool">
+  True if the hooks have been pre-signed, false otherwise
+</ResponseField>
+
+**See also:** `COWShed.sol:86`
+
+---
+
+### resetPreSignStorage
+
+```solidity
+function resetPreSignStorage() external onlyAdmin returns (IPreSignStorage)
+```
+
+Creates and sets a new pre-sign storage contract. The first time this is called, it enables pre-signatures. Subsequent calls invalidate any pending pre-signatures but keep pre-signing enabled.
+
+<ResponseField name="storageContract" type="IPreSignStorage">
+  The newly deployed PreSignStateStorage contract
+</ResponseField>
+
+**Access:** Only admin
+
+**Emits:** `PreSignStorageChanged(address storageContract)`
+
+**Errors:**
+- `OnlyAdmin()` - If caller is not the admin
+
+**See also:** `COWShed.sol:66`
+
+---
+
+### setPreSignStorage
+
+```solidity
+function setPreSignStorage(IPreSignStorage storageContract) external onlyAdmin returns (IPreSignStorage)
+```
+
+Sets the pre-sign storage contract to a specific address. Set to `address(0)` to disable pre-signing functionality.
+
+<ParamField path="storageContract" type="IPreSignStorage">
+  Address of the IPreSignStorage contract, or address(0) to disable
+</ParamField>
+
+<ResponseField name="storageContract" type="IPreSignStorage">
+  The storage contract that was set
+</ResponseField>
+
+**Access:** Only admin
+
+**Emits:** `PreSignStorageChanged(address storageContract)`
+
+**Errors:**
+- `OnlyAdmin()` - If caller is not the admin
+
+**See also:** `COWShed.sol:74`
+
+---
+
+### preSignStorage
+
+```solidity
+function preSignStorage() external view returns (IPreSignStorage)
+```
+
+Returns the current pre-sign storage contract address.
+
+<ResponseField name="storage" type="IPreSignStorage">
+  The current pre-sign storage contract, or address(0) if not set
+</ResponseField>
+
+---
+
+## Administrative Functions
+
+### updateTrustedExecutor
+
+```solidity
+function updateTrustedExecutor(address who) external
+```
+
+Updates the trusted executor address. Can only be called by the contract itself (must be executed through `executeHooks` or similar).
+
+<ParamField path="who" type="address">
+  The new trusted executor address
+</ParamField>
+
+**Access:** Only callable by the contract itself (via delegatecall)
+
+**Emits:** `TrustedExecutorChanged(address prev, address who)`
+
+**Errors:**
+- `OnlySelf()` - If caller is not the contract itself
+
+**See also:** `COWShed.sol:122`
+
+---
+
+### updateImplementation
+
+```solidity
+function updateImplementation(address newImplementation) external onlyAdmin
+```
+
+Updates the implementation contract for the proxy. This allows upgrading the COWShed logic.
+
+<ParamField path="newImplementation" type="address">
+  The address of the new implementation contract
+</ParamField>
+
+**Access:** Only admin
+
+**Emits:** `Upgraded(address indexed implementation)`
+
+**Errors:**
+- `OnlyAdmin()` - If caller is not the admin
+
+<Warning>
+  Upgrading the implementation affects all future calls to the proxy. Ensure the new implementation is thoroughly tested.
+</Warning>
+
+**See also:** `COWShed.sol:132`
+
+---
+
+### revokeNonce
+
+```solidity
+function revokeNonce(bytes32 nonce) external onlyAdmin
+```
+
+Revokes a specific nonce, preventing its future use. Useful for invalidating pending signatures.
+
+<ParamField path="nonce" type="bytes32">
+  The nonce to revoke
+</ParamField>
+
+**Access:** Only admin
+
+**Errors:**
+- `OnlyAdmin()` - If caller is not the admin
+- `NonceAlreadyUsed()` - If the nonce has already been used
+
+**See also:** `COWShed.sol:140`
+
+---
+
+## View Functions
+
+### domainSeparator
+
+```solidity
+function domainSeparator() public view returns (bytes32)
+```
+
+Returns the EIP-712 domain separator for this COWShed instance.
+
+<ResponseField name="separator" type="bytes32">
+  The EIP-712 domain separator hash
+</ResponseField>
+
+**Formula:**
+```solidity
+keccak256(abi.encode(
+  domainTypeHash,
+  keccak256(bytes("COWShed")),
+  keccak256(bytes(VERSION)),
+  block.chainid,
+  address(this)
+))
+```
+
+**See also:** `COWShed.sol:152`
+
+---
+
+### trustedExecutor
+
+```solidity
+function trustedExecutor() external view returns (address)
+```
+
+Returns the current trusted executor address.
+
+<ResponseField name="executor" type="address">
+  The trusted executor address
+</ResponseField>
+
+**See also:** `COWShed.sol:160`
+
+---
+
+### nonces
+
+```solidity
+function nonces(bytes32 nonce) external view returns (bool)
+```
+
+Checks if a nonce has already been used.
+
+<ParamField path="nonce" type="bytes32">
+  The nonce to check
+</ParamField>
+
+<ResponseField name="used" type="bool">
+  True if the nonce has been used, false otherwise
+</ResponseField>
+
+**See also:** `COWShed.sol:147`
+
+---
+
+## Events
+
+### TrustedExecutorChanged
+
+```solidity
+event TrustedExecutorChanged(address previousExecutor, address newExecutor)
+```
+
+Emitted when the trusted executor is updated.
+
+<ParamField path="previousExecutor" type="address">
+  The previous trusted executor address
+</ParamField>
+
+<ParamField path="newExecutor" type="address">
+  The new trusted executor address
+</ParamField>
+
+---
+
+### Upgraded
+
+```solidity
+event Upgraded(address indexed implementation)
+```
+
+Emitted when the implementation contract is upgraded.
+
+<ParamField path="implementation" type="address" indexed>
+  The new implementation address
+</ParamField>
+
+---
+
+### PreSignStorageChanged
+
+```solidity
+event PreSignStorageChanged(address indexed newStorage)
+```
+
+Emitted when the pre-sign storage contract is changed.
+
+<ParamField path="newStorage" type="address" indexed>
+  The new pre-sign storage contract address
+</ParamField>
+
+---
+
+## Errors
+
+### InvalidSignature
+
+```solidity
+error InvalidSignature()
+```
+
+Thrown when signature verification fails in `executeHooks()`.
+
+---
+
+### OnlyTrustedRole
+
+```solidity
+error OnlyTrustedRole()
+```
+
+Thrown when a function restricted to admin or trusted executor is called by an unauthorized address.
+
+---
+
+### OnlySelf
+
+```solidity
+error OnlySelf()
+```
+
+Thrown when a function that can only be called by the contract itself is called externally.
+
+---
+
+### AlreadyInitialized
+
+```solidity
+error AlreadyInitialized()
+```
+
+Thrown when `initialize()` is called more than once.
+
+---
+
+### OnlyAdmin
+
+```solidity
+error OnlyAdmin()
+```
+
+Thrown when an admin-only function is called by a non-admin address.
+
+---
+
+### OnlyAdminOrTrustedExecutorOrSelf
+
+```solidity
+error OnlyAdminOrTrustedExecutorOrSelf()
+```
+
+Thrown when a restricted function is called by an unauthorized address.
+
+---
+
+### NotPreSigned
+
+```solidity
+error NotPreSigned()
+```
+
+Thrown when `executePreSignedHooks()` is called for hooks that haven't been pre-signed.
+
+---
+
+## Receive Function
+
+```solidity
+receive() external payable {}
+```
+
+The contract can receive ETH directly.
+
+---
+
+## Usage Example
+
+```solidity
+// Execute hooks with signature
+Call[] memory calls = new Call[](1);
+calls[0] = Call({
+    target: token,
+    value: 0,
+    callData: abi.encodeCall(IERC20.approve, (spender, amount)),
+    allowFailure: false,
+    isDelegateCall: false
+});
+
+bytes32 nonce = keccak256(abi.encodePacked("unique-nonce"));
+uint256 deadline = block.timestamp + 1 hours;
+
+// Sign off-chain with admin's private key
+bytes memory signature = signExecuteHooks(calls, nonce, deadline, adminPrivateKey);
+
+// Execute
+cowshed.executeHooks(calls, nonce, deadline, signature);
+```

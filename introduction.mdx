@@ -1,0 +1,149 @@
+---
+title: Introduction
+description: Learn about COW Shed and how it enables permissioned hooks for CoW Protocol orders
+---
+
+# Introduction to COW Shed
+
+COW Shed is a smart contract system that enables users to execute **permissioned pre and post hooks** with their CoW Protocol orders. It provides a secure, gas-efficient way to perform complex DeFi operations before and after trades execute.
+
+## What is COW Shed?
+
+COW Shed is a user-owned ERC1967 proxy deployed at a **deterministic address** using CREATE2 with the user's address as the salt. This deterministic deployment allows users to:
+
+1. Set the proxy address as the `receiver` for CoW Swap orders with pre/post hooks
+2. Deploy the proxy on-demand at the first execution of hooks
+3. Execute authenticated actions through EIP-712 signed messages
+
+<CardGroup cols={2}>
+  <Card title="Deterministic Deployment" icon="location-dot">
+    Proxies deploy to predictable addresses using CREATE2, enabling seamless integration with CoW Protocol orders
+  </Card>
+  <Card title="EIP-712 Signatures" icon="signature">
+    Users sign structured messages to authorize hook execution, supporting both EOA and smart contract wallets
+  </Card>
+  <Card title="Gas Efficient" icon="bolt">
+    Bitmap-based nonce management and optimized proxy architecture minimize gas costs
+  </Card>
+  <Card title="Flexible Hooks" icon="code">
+    Execute arbitrary calls before and after orders, with support for delegate calls and failure handling
+  </Card>
+</CardGroup>
+
+## Why COW Shed?
+
+COW Shed solves a critical problem in DeFi composability: **how to safely execute permissioned actions alongside decentralized trading**. Without COW Shed, users cannot:
+
+- Transfer assets from their proxy during order execution
+- Add collateral or repay debt positions just-in-time
+- Bridge swap outputs atomically
+- Claim rewards before trading
+
+By authenticating hooks through EIP-712 signatures, COW Shed ensures that only user-approved operations execute on their behalf.
+
+## How It Works
+
+The system uses a simple flow:
+
+1. **User creates an order** on CoW Protocol with their deterministic proxy address as the receiver
+2. **User signs an EIP-712 message** containing the hooks to execute (pre-order and/or post-order)
+3. **Order is submitted** to CoW Protocol with the signature
+4. **On execution**, the COWShedFactory deploys the proxy (if needed) and executes the authenticated hooks
+
+<Note>
+The proxy only deploys when hooks are first executed, saving gas for users who haven't used the system yet.
+</Note>
+
+## Signature Structure
+
+Users sign an `ExecuteHooks` message with the following structure:
+
+```solidity
+ExecuteHooks(Call[] calls, bytes32 nonce, uint256 deadline)
+Call(address target, uint256 value, bytes callData, bool allowFailure, bool isDelegateCall)
+```
+
+**Key parameters:**
+- `calls`: Array of function calls to execute
+- `nonce`: Unique identifier to prevent replay attacks (bitmap-based, can be non-sequential)
+- `deadline`: Unix timestamp after which the signature expires
+- `allowFailure`: Whether the call can fail without reverting the entire transaction
+- `isDelegateCall`: Whether to execute as a delegate call
+
+<Tip>
+Sequential nonces save gas due to bitmap implementation. Non-sequential nonces are supported but cost more gas.
+</Tip>
+
+## Authentication Methods
+
+COW Shed supports two authentication methods:
+
+### EOA Signatures
+For externally owned accounts, signatures are 65 bytes encoded as `abi.encodePacked(r, s, v)` and verified using ECDSA recovery (src/LibAuthenticatedHooks.sol:49).
+
+### EIP-1271 Smart Contract Signatures
+For smart contract wallets, COW Shed validates signatures using the EIP-1271 `isValidSignature` interface (src/LibAuthenticatedHooks.sol:43-44), enabling support for multi-sigs, social recovery wallets, and other advanced account abstractions.
+
+## Use Cases
+
+COW Shed enables powerful DeFi workflows:
+
+<AccordionGroup>
+  <Accordion title="JIT Liquidity Provision">
+    Borrow assets from a lending protocol in the pre-hook, swap them on CoW Protocol, and use the output to repay the loan in the post-hook.
+    
+    **Example**: Borrow DAI from Maker, swap to COW, repay with other collateral.
+  </Accordion>
+  
+  <Accordion title="Cross-Chain Bridging">
+    Receive swap outputs at your proxy address and automatically bridge them to another chain in the post-hook.
+    
+    **Example**: Swap ETH to USDC and bridge USDC to Gnosis Chain in one transaction.
+  </Accordion>
+  
+  <Accordion title="Reward Claiming + Swapping">
+    Claim vested tokens or farming rewards in the pre-hook, then immediately swap them.
+    
+    **Example**: Claim WETH from a Llama Pay vesting contract and swap to stablecoins.
+  </Accordion>
+  
+  <Accordion title="Collateral Management">
+    Adjust CDP positions or lending protocol collateral based on swap outcomes.
+    
+    **Example**: Add collateral to an Aave position using swap outputs to maintain healthy LTV ratios.
+  </Accordion>
+</AccordionGroup>
+
+## Security Features
+
+<CardGroup cols={2}>
+  <Card title="Nonce Management" icon="shield-check">
+    Bitmap-based nonces prevent replay attacks. Users can revoke unused nonces by calling `revokeNonce()` (src/COWShed.sol:140)
+  </Card>
+  <Card title="Deadline Enforcement" icon="clock">
+    All signed hooks include a deadline timestamp, preventing execution of stale signatures (src/LibAuthenticatedHooks.sol:24)
+  </Card>
+  <Card title="Admin Controls" icon="user-shield">
+    Only the proxy admin (user) can upgrade implementations, update trusted executors, and manage pre-signatures
+  </Card>
+  <Card title="Trusted Executor" icon="lock">
+    Factory contract can execute hooks without signatures during initialization, but only the user can update this role
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/getting-started/quickstart">
+    Get started with COW Shed in minutes
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Deep dive into the system architecture
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/cowshed">
+    Explore contract interfaces and functions
+  </Card>
+  <Card title="Examples" icon="flask" href="/examples/overview">
+    Learn from real-world implementations
+  </Card>
+</CardGroup>

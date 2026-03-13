@@ -1,0 +1,329 @@
+---
+title: "Storage"
+description: "Storage contracts for managing presigned hashes and COWShed state"
+---
+
+The COW Shed uses a modular storage architecture with separate contracts for presigned state management and main contract state. This separation allows for flexible state management and optional state clearing.
+
+## PreSignStateStorage
+
+The `PreSignStateStorage` contract is a dedicated storage contract for managing presigned order hashes. It's deployed separately from the main COWShed contract, allowing users to clear their presigned state by redeploying this contract.
+
+<Note>
+The PreSignStateStorage contract can only be modified by the authorized COWShed contract that deployed it. This ensures that only the main contract can manage presigned state.
+</Note>
+
+### Contract Source
+
+```solidity
+// SPDX-License-Identifier: GPL-3.0-or-later
+pragma solidity ^0.8.25;
+
+import {IPreSignStorage} from "./IPreSignStorage.sol";
+
+contract PreSignStateStorage is IPreSignStorage {
+    event PreSigned(bytes32 indexed hash, bool signed);
+
+    error OnlyCowShed();
+
+    address public immutable cowShed;
+
+    mapping(bytes32 => bool) public presignedHashes;
+
+    modifier onlyCowShed() {
+        if (msg.sender != cowShed) {
+            revert OnlyCowShed();
+        }
+        _;
+    }
+
+    constructor(address _cowShed) {
+        cowShed = _cowShed;
+    }
+
+    function setPreSigned(bytes32 hash, bool signed) external onlyCowShed {
+        presignedHashes[hash] = signed;
+        emit PreSigned(hash, signed);
+    }
+
+    function isPreSigned(bytes32 hash) external view returns (bool) {
+        return presignedHashes[hash];
+    }
+}
+```
+
+### Constructor
+
+<ParamField path="_cowShed" type="address" required>
+  The address of the COWShed contract that is authorized to modify presigned state. This is set as an immutable value during deployment.
+</ParamField>
+
+### State Variables
+
+<ResponseField name="cowShed" type="address">
+  Immutable reference to the authorized COWShed contract. Only this address can call `setPreSigned`.
+</ResponseField>
+
+<ResponseField name="presignedHashes" type="mapping(bytes32 => bool)">
+  Mapping of order hashes to their presigned status. `true` indicates the hash is presigned, `false` or unset indicates it is not.
+</ResponseField>
+
+### Functions
+
+#### setPreSigned
+
+Sets or revokes the presigned status of a hash. Can only be called by the authorized COWShed contract.
+
+```solidity
+function setPreSigned(bytes32 hash, bool signed) external onlyCowShed
+```
+
+<ParamField path="hash" type="bytes32" required>
+  The hash of the order to presign or revoke. Typically computed from order parameters.
+</ParamField>
+
+<ParamField path="signed" type="bool" required>
+  Whether to presign (`true`) or revoke the presignature (`false`) for this hash.
+</ParamField>
+
+<Warning>
+This function can only be called by the authorized COWShed contract. Attempts to call it from other addresses will revert with `OnlyCowShed()` error.
+</Warning>
+
+**Emits:**
+- `PreSigned(bytes32 indexed hash, bool signed)` - Emitted whenever a hash's presigned status changes.
+
+**Reverts:**
+- `OnlyCowShed()` - If called by any address other than the authorized COWShed contract.
+
+#### isPreSigned
+
+Checks whether a given hash has been presigned.
+
+```solidity
+function isPreSigned(bytes32 hash) external view returns (bool)
+```
+
+<ParamField path="hash" type="bytes32" required>
+  The hash to check for presigned status.
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  Returns `true` if the hash is presigned, `false` otherwise.
+</ResponseField>
+
+### Events
+
+#### PreSigned
+
+```solidity
+event PreSigned(bytes32 indexed hash, bool signed)
+```
+
+Emitted when a hash's presigned status is modified.
+
+<ResponseField name="hash" type="bytes32">
+  The order hash that was modified (indexed for efficient filtering).
+</ResponseField>
+
+<ResponseField name="signed" type="bool">
+  The new presigned status - `true` for presigned, `false` for revoked.
+</ResponseField>
+
+### Errors
+
+#### OnlyCowShed
+
+```solidity
+error OnlyCowShed()
+```
+
+Thrown when an unauthorized address attempts to call `setPreSigned`.
+
+---
+
+## IPreSignStorage
+
+The interface that defines the presign storage contract's external API.
+
+```solidity
+// SPDX-License-Identifier: GPL-3.0-or-later
+pragma solidity ^0.8.25;
+
+interface IPreSignStorage {
+    /// @notice Pre-sign a hash, or revoke a pre-signature.
+    /// @param hash The hash to pre-sign or revoke
+    /// @param signed Whether the hash is pre-signed or not
+    function setPreSigned(bytes32 hash, bool signed) external;
+
+    /// @notice Check if a hash is presigned or not.
+    /// @param hash The hash to check
+    /// @return Whether the hash is presigned or not
+    function isPreSigned(bytes32 hash) external view returns (bool);
+}
+```
+
+This minimal interface allows the COWShed contract to interact with the presign storage without tight coupling to the implementation.
+
+---
+
+## COWShedStorage
+
+The `COWShedStorage` contract manages the main COWShed contract state using ERC-7201 namespaced storage pattern. This prevents storage collisions in the proxy upgrade pattern.
+
+### State Structure
+
+```solidity
+struct State {
+    bool initialized;
+    address trustedExecutor;
+    LibBitmap.Bitmap nonces;
+    IPreSignStorage preSignStorage;
+}
+```
+
+<ResponseField name="initialized" type="bool">
+  Flag indicating whether the COWShed contract has been initialized. Prevents double initialization.
+</ResponseField>
+
+<ResponseField name="trustedExecutor" type="address">
+  The address of the trusted executor contract that can execute pre-validated orders on behalf of users.
+</ResponseField>
+
+<ResponseField name="nonces" type="LibBitmap.Bitmap">
+  Bitmap storage for tracking used nonces. Uses Solady's efficient bitmap library to store nonce usage in a gas-optimized manner. Each bit represents whether a specific nonce has been used.
+</ResponseField>
+
+<ResponseField name="preSignStorage" type="IPreSignStorage">
+  Reference to the PreSignStateStorage contract instance used for managing presigned hashes.
+</ResponseField>
+
+### Storage Pattern
+
+```solidity
+bytes32 internal constant STATE_STORAGE_SLOT = keccak256("COWShed.State");
+
+function _state() internal pure returns (State storage state) {
+    bytes32 stateSlot = STATE_STORAGE_SLOT;
+    assembly {
+        state.slot := stateSlot
+    }
+}
+```
+
+<Note>
+The storage slot is computed as `keccak256("COWShed.State")`, following the ERC-7201 namespaced storage pattern. This ensures the state doesn't collide with other storage in the proxy pattern.
+</Note>
+
+### Nonce Management
+
+The contract uses a bitmap for efficient nonce tracking, where each nonce is represented by a single bit.
+
+#### _useNonce
+
+```solidity
+function _useNonce(bytes32 _nonce) internal
+```
+
+Marks a nonce as used. Reverts if the nonce has already been used.
+
+<ParamField path="_nonce" type="bytes32" required>
+  The nonce to mark as used.
+</ParamField>
+
+**Reverts:**
+- `NonceAlreadyUsed()` - If the nonce has already been consumed.
+
+#### _isNonceUsed
+
+```solidity
+function _isNonceUsed(bytes32 _nonce) internal view returns (bool)
+```
+
+Checks whether a nonce has been used.
+
+<ParamField path="_nonce" type="bytes32" required>
+  The nonce to check.
+</ParamField>
+
+<ResponseField name="return" type="bool">
+  Returns `true` if the nonce has been used, `false` otherwise.
+</ResponseField>
+
+### Errors
+
+#### NonceAlreadyUsed
+
+```solidity
+error NonceAlreadyUsed()
+```
+
+Thrown when attempting to use a nonce that has already been consumed.
+
+#### PreSignStorageNotSet
+
+```solidity
+error PreSignStorageNotSet()
+```
+
+Thrown when attempting to access presign storage functionality before the storage contract has been configured.
+
+---
+
+## Storage Architecture
+
+The COW Shed uses a two-tier storage architecture:
+
+### 1. Main State Storage (COWShedStorage)
+
+Stored in a namespaced slot using ERC-7201 pattern to prevent collisions:
+- Initialization flag
+- Trusted executor reference
+- Nonce bitmap (gas-efficient tracking of used nonces)
+- PreSignStorage contract reference
+
+### 2. Presign State Storage (PreSignStateStorage)
+
+Deployed as a separate contract with the following benefits:
+- **State Clearing**: Users can redeploy to clear all presigned hashes
+- **Gas Efficiency**: Isolated storage reduces main contract complexity
+- **Access Control**: Only the authorized COWShed can modify presigned state
+
+<Warning>
+The PreSignStateStorage contract is immutably linked to a specific COWShed address at deployment time. Ensure the correct COWShed address is used during deployment.
+</Warning>
+
+### Relationship Diagram
+
+```
+┌─────────────────────────────────────┐
+│         COWShed (Proxy)             │
+│  ┌───────────────────────────────┐  │
+│  │   COWShedStorage              │  │
+│  │   - initialized               │  │
+│  │   - trustedExecutor           │  │
+│  │   - nonces (bitmap)           │  │
+│  │   - preSignStorage ────────┐  │  │
+│  └───────────────────────────────┘  │
+└─────────────────────────────────────┘
+                                 │
+                                 │ reference
+                                 ▼
+                    ┌─────────────────────────────┐
+                    │   PreSignStateStorage       │
+                    │   - cowShed (immutable)     │
+                    │   - presignedHashes mapping │
+                    └─────────────────────────────┘
+```
+
+### Gas Optimization
+
+The storage design includes several gas optimizations:
+
+1. **Bitmap for Nonces**: Using Solady's LibBitmap stores nonce state as single bits rather than full boolean values, reducing storage costs by ~97%.
+
+2. **Separate Presign Storage**: Isolating presigned hashes in a separate contract keeps the main contract storage lean and allows for optional state clearing without redeploying the main contract.
+
+3. **Immutable References**: The `cowShed` address in PreSignStateStorage is immutable, saving gas on every access compared to storage reads.
+
+4. **Namespaced Storage**: The ERC-7201 pattern enables upgrade-safe storage without the overhead of mapping-based storage patterns.

@@ -1,0 +1,243 @@
+---
+title: 'Quickstart'
+description: 'Get started with COW Shed in minutes - deploy your proxy and execute your first hook'
+---
+
+# Quickstart
+
+Get your COW Shed proxy deployed and execute your first authenticated hook in just a few steps.
+
+## What You'll Build
+
+In this quickstart, you'll:
+- Find your deterministic proxy address
+- Sign a hook execution message
+- Execute an authenticated hook that deploys your proxy
+
+<Note>
+No contract deployment transaction needed! Your proxy deploys automatically on first hook execution.
+</Note>
+
+## Prerequisites
+
+- An Ethereum wallet (EOA or smart contract wallet)
+- Access to one of the [supported networks](/deployment/networks)
+- Basic understanding of EIP-712 signatures
+
+<Steps>
+
+<Step title="Get Your Proxy Address">
+
+Your COW Shed proxy has a deterministic address based on your wallet address. You can compute it before it's deployed.
+
+**Using the Factory Contract:**
+
+```solidity
+// COWShedFactory on Ethereum Mainnet
+address factory = 0x312f92fe5f1710408b20d52a374fa29e099cfa86;
+
+// Get your proxy address
+address myProxy = ICOWShedFactory(factory).proxyOf(myAddress);
+```
+
+**Using TypeScript:**
+
+```typescript
+import { CowShedSdk } from '@cowprotocol/cow-shed-sdk';
+
+const sdk = new CowShedSdk({
+  factoryAddress: '0x312f92fe5f1710408b20d52a374fa29e099cfa86',
+  implementationAddress: '0xa2704cf562ad418bf0453f4b662ebf6a2489ed88',
+  chainId: 1 // Ethereum Mainnet
+});
+
+const proxyAddress = sdk.computeProxyAddress(userAddress);
+console.log('Your proxy address:', proxyAddress);
+```
+
+<Info>
+The proxy address is the same across all networks where COW Shed is deployed. See [Networks](/deployment/networks) for deployment addresses.
+</Info>
+
+</Step>
+
+<Step title="Construct Your First Hook">
+
+Let's create a simple hook that wraps ETH to WETH. Hooks are defined as `Call` structs:
+
+```typescript
+import { ICall } from '@cowprotocol/cow-shed-sdk';
+import { ethers } from 'ethers';
+
+const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+
+const calls: ICall[] = [
+  {
+    target: WETH,
+    value: ethers.parseEther('1'), // 1 ETH
+    callData: '0xd0e30db0', // deposit() function selector
+    allowFailure: false,
+    isDelegateCall: false
+  }
+];
+```
+
+**Call Struct Fields:**
+
+- `target`: The contract address to call
+- `value`: Amount of ETH to send (in wei)
+- `callData`: Encoded function call data
+- `allowFailure`: If `true`, execution continues even if this call reverts
+- `isDelegateCall`: If `true`, uses `delegatecall` instead of `call`
+
+</Step>
+
+<Step title="Sign the Hook Message">
+
+Sign an EIP-712 message to authorize the hook execution:
+
+```typescript
+import { CowShedSdk } from '@cowprotocol/cow-shed-sdk';
+import { ethers } from 'ethers';
+
+const sdk = new CowShedSdk({
+  factoryAddress: '0x312f92fe5f1710408b20d52a374fa29e099cfa86',
+  implementationAddress: '0xa2704cf562ad418bf0453f4b662ebf6a2489ed88',
+  chainId: 1
+});
+
+// Generate a unique nonce (can be sequential or random)
+const nonce = ethers.encodeBytes32String('my-first-hook');
+
+// Set deadline (2 hours from now)
+const deadline = BigInt(Math.floor(Date.now() / 1000) + 7200);
+
+// Get the hash to sign
+const hashToSign = sdk.hashToSignWithUser(
+  calls,
+  nonce,
+  deadline,
+  userAddress
+);
+
+// Sign with your wallet
+const signature = await wallet.signingKey.sign(hashToSign);
+const encodedSignature = CowShedSdk.encodeEOASignature(
+  BigInt(signature.r),
+  BigInt(signature.s),
+  signature.v
+);
+```
+
+<Warning>
+Nonces are single-use! Once a nonce is used, it cannot be reused. Nonces don't have to be sequential, but sequential nonces save gas.
+</Warning>
+
+</Step>
+
+<Step title="Execute the Hook">
+
+Call the factory's `executeHooks` function. This will:
+1. Deploy your proxy if it doesn't exist yet
+2. Verify your signature
+3. Execute the hook calls
+
+```typescript
+import { ethers } from 'ethers';
+
+const factory = new ethers.Contract(
+  '0x312f92fe5f1710408b20d52a374fa29e099cfa86',
+  [
+    'function executeHooks(tuple(address target, uint256 value, bytes callData, bool allowFailure, bool isDelegateCall)[] calls, bytes32 nonce, uint256 deadline, address user, bytes signature)'
+  ],
+  signer
+);
+
+const tx = await factory.executeHooks(
+  calls,
+  nonce,
+  deadline,
+  userAddress,
+  encodedSignature
+);
+
+await tx.wait();
+console.log('Hook executed! Transaction:', tx.hash);
+```
+
+**Or encode the calldata for use in CoW Protocol hooks:**
+
+```typescript
+const hooksCalldata = CowShedSdk.encodeExecuteHooksForFactory(
+  calls,
+  nonce,
+  deadline,
+  userAddress,
+  encodedSignature
+);
+
+// Use in CoW Protocol order metadata
+const hooks = {
+  pre: [{
+    target: '0x312f92fe5f1710408b20d52a374fa29e099cfa86',
+    callData: hooksCalldata,
+    gasLimit: '500000'
+  }]
+};
+```
+
+</Step>
+
+<Step title="Verify Deployment">
+
+After the first execution, check that your proxy is deployed:
+
+```typescript
+const code = await provider.getCode(proxyAddress);
+if (code !== '0x') {
+  console.log('Proxy deployed successfully at:', proxyAddress);
+}
+
+// Check the owner
+const factory = new ethers.Contract(
+  '0x312f92fe5f1710408b20d52a374fa29e099cfa86',
+  ['function ownerOf(address proxy) view returns (address)'],
+  provider
+);
+
+const owner = await factory.ownerOf(proxyAddress);
+console.log('Proxy owner:', owner);
+```
+
+</Step>
+
+</Steps>
+
+## What's Next?
+
+<CardGroup cols={2}>
+  <Card title="Integration Guide" icon="puzzle-piece" href="/getting-started/integration">
+    Learn how to integrate COW Shed with CoW Protocol orders
+  </Card>
+  <Card title="Hook Examples" icon="code" href="/examples/overview">
+    Explore real-world hook examples
+  </Card>
+  <Card title="Core Concepts" icon="book" href="/concepts/signatures">
+    Understand signatures and security
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/cowshed-factory">
+    Explore the complete API documentation
+  </Card>
+</CardGroup>
+
+## Contract Addresses
+
+| Network | Factory | Implementation |
+|---------|---------|----------------|
+| Ethereum Mainnet (1) | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` |
+| Gnosis Chain (100) | `0x4f4350bf2c74aacd508d598a1ba94ef84378793d` | `0x62d3a7ff48f9ae1c28a9552a055482f8c63787f8` |
+| Arbitrum One (42161) | `0x312f92fe5f1710408b20d52a374fa29e099cfa86` | `0xa2704cf562ad418bf0453f4b662ebf6a2489ed88` |
+
+<Info>
+See the full list of deployments in [Networks](/deployment/networks).
+</Info>

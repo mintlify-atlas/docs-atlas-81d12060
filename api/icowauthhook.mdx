@@ -1,0 +1,499 @@
+---
+title: "ICOWAuthHook"
+description: "Complete interface reference for ICOWAuthHook"
+---
+
+# ICOWAuthHook Interface
+
+The ICOWAuthHook interface defines the standard API for authenticated hook execution in the CoW Protocol ecosystem. It provides methods for executing arbitrary calls with signature verification, pre-signing, and trusted execution.
+
+**Source:** `~/workspace/source/src/ICOWAuthHook.sol`
+
+**Implemented by:** `COWShed`
+
+---
+
+## Structs
+
+### Call
+
+```solidity
+struct Call {
+    address target;
+    uint256 value;
+    bytes callData;
+    bool allowFailure;
+    bool isDelegateCall;
+}
+```
+
+Represents a single call to be executed by the COWShed contract.
+
+<ParamField path="target" type="address">
+  The address of the contract to call
+</ParamField>
+
+<ParamField path="value" type="uint256">
+  The amount of ETH (in wei) to send with the call
+</ParamField>
+
+<ParamField path="callData" type="bytes">
+  The encoded function call data (function selector + parameters)
+</ParamField>
+
+<ParamField path="allowFailure" type="bool">
+  If true, the call failing will not revert the entire transaction. If false, any failure reverts everything
+</ParamField>
+
+<ParamField path="isDelegateCall" type="bool">
+  If true, executes as a delegatecall (runs in the context of the COWShed proxy). If false, executes as a regular call
+</ParamField>
+
+<Expandable title="Call Execution Modes">
+
+**Regular Call (`isDelegateCall = false`):**
+- Executes in the target contract's context
+- Target contract's storage is modified
+- `msg.sender` in target is the COWShed proxy
+- Safer for most operations
+
+**Delegate Call (`isDelegateCall = true`):**
+- Executes in the COWShed proxy's context
+- COWShed proxy's storage is modified
+- Can change proxy state directly
+- Required for certain advanced operations
+- **Use with extreme caution** - can break proxy state
+
+</Expandable>
+
+<Expandable title="Failure Handling">
+
+**Allow Failure (`allowFailure = true`):**
+- If the call reverts, execution continues
+- Useful for optional operations
+- Example: Attempting to revoke an approval that might not exist
+
+**Disallow Failure (`allowFailure = false`):**
+- If the call reverts, the entire transaction reverts
+- Ensures all operations succeed or none do
+- Recommended for critical operations
+
+</Expandable>
+
+**See also:** `ICOWAuthHook.sol:6`
+
+---
+
+## Interface Methods
+
+### executeHooks
+
+```solidity
+function executeHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline,
+    bytes calldata signature
+) external
+```
+
+Executes a set of calls after authenticating the signature, verifying the nonce hasn't been reused, and checking the deadline hasn't passed.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to execute in order
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce to prevent replay attacks. Will be marked as used
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Unix timestamp (seconds since epoch) after which the signature is invalid
+</ParamField>
+
+<ParamField path="signature" type="bytes">
+  EIP-712 signature from the admin authorizing these hooks
+</ParamField>
+
+**Signature Format:** The signature must be a valid EIP-712 signature over the message hash:
+```solidity
+keccak256(abi.encode(
+    keccak256("ExecuteHooks(Call[] calls,bytes32 nonce,uint256 deadline)"),
+    keccak256(encodeCalls(calls)),
+    nonce,
+    deadline
+))
+```
+
+**Access:** Anyone with a valid signature from the admin
+
+**See also:** `ICOWAuthHook.sol:17`
+
+---
+
+### trustedExecuteHooks
+
+```solidity
+function trustedExecuteHooks(Call[] calldata calls) external
+```
+
+Executes arbitrary calls without signature verification. Only callable by the trusted executor or admin.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to execute
+</ParamField>
+
+**Access:** Only trusted executor or admin
+
+<Warning>
+  This function bypasses all signature checks and should only be callable by highly trusted addresses like the factory contract.
+</Warning>
+
+**See also:** `ICOWAuthHook.sol:20`
+
+---
+
+### updateTrustedExecutor
+
+```solidity
+function updateTrustedExecutor(address who) external
+```
+
+Updates the trusted executor address.
+
+<ParamField path="who" type="address">
+  The new trusted executor address
+</ParamField>
+
+**Access:** Only callable by the contract itself (must be executed via executeHooks or similar)
+
+<Note>
+  This function is designed to be called via a delegatecall through executeHooks, ensuring the admin must sign to change the trusted executor.
+</Note>
+
+**See also:** `ICOWAuthHook.sol:23`
+
+---
+
+## Pre-Signing Methods
+
+### preSignStorage
+
+```solidity
+function preSignStorage() external view returns (IPreSignStorage)
+```
+
+Returns the current pre-sign storage contract.
+
+<ResponseField name="storage" type="IPreSignStorage">
+  The current pre-sign storage contract address, or address(0) if not set
+</ResponseField>
+
+**See also:** `ICOWAuthHook.sol:26`
+
+---
+
+### resetPreSignStorage
+
+```solidity
+function resetPreSignStorage() external returns (IPreSignStorage)
+```
+
+Creates and sets a new pre-sign storage contract, enabling pre-signatures or invalidating pending ones.
+
+<ResponseField name="storage" type="IPreSignStorage">
+  The newly deployed PreSignStateStorage contract
+</ResponseField>
+
+**Behavior:**
+- **First call:** Enables pre-signing functionality
+- **Subsequent calls:** Invalidates all pending pre-signatures but keeps pre-signing enabled
+
+**Access:** Only admin
+
+**Use Case:** Invalidate all pending pre-signed hooks in case of a security concern.
+
+**See also:** `ICOWAuthHook.sol:32`
+
+---
+
+### setPreSignStorage
+
+```solidity
+function setPreSignStorage(IPreSignStorage storageContract) external returns (IPreSignStorage)
+```
+
+Sets the pre-sign storage contract to a specific address, enabling or disabling pre-signing.
+
+<ParamField path="storageContract" type="IPreSignStorage">
+  Address of the IPreSignStorage contract, or address(0) to disable pre-signing
+</ParamField>
+
+<ResponseField name="storage" type="IPreSignStorage">
+  The storage contract that was set
+</ResponseField>
+
+**Access:** Only admin
+
+**Use Cases:**
+- Set to a new contract address to migrate pre-signatures
+- Set to `address(0)` to completely disable pre-signing functionality
+- Set to a shared storage contract for cross-contract pre-signatures
+
+**See also:** `ICOWAuthHook.sol:37`
+
+---
+
+### preSignHooks
+
+```solidity
+function preSignHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline,
+    bool signed
+) external
+```
+
+Pre-signs a set of hooks on-chain, allowing them to be executed later without an off-chain signature.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to pre-sign
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce for these hooks
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Deadline for execution
+</ParamField>
+
+<ParamField path="signed" type="bool">
+  True to pre-sign (enable execution), false to revoke a pre-signature
+</ParamField>
+
+**Access:** Only admin
+
+**Use Cases:**
+- **Gasless execution:** Admin pre-signs on-chain, anyone can execute later
+- **Scheduled operations:** Pre-sign hooks to be executed at a specific time
+- **Revocation:** Set `signed = false` to revoke a pre-signature before execution
+
+**See also:** `ICOWAuthHook.sol:43`
+
+---
+
+### isPreSignedHooks
+
+```solidity
+function isPreSignedHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline
+) external view returns (bool)
+```
+
+Checks if a set of hooks has been pre-signed.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to check
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Nonce for the hooks
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Deadline for the hooks
+</ParamField>
+
+<ResponseField name="signed" type="bool">
+  True if the hooks have been pre-signed, false otherwise
+</ResponseField>
+
+**See also:** `ICOWAuthHook.sol:46`
+
+---
+
+### executePreSignedHooks
+
+```solidity
+function executePreSignedHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline
+) external
+```
+
+Executes a set of hooks that have been pre-signed on-chain.
+
+<ParamField path="calls" type="Call[]">
+  Array of calls to execute
+</ParamField>
+
+<ParamField path="nonce" type="bytes32">
+  Unique nonce (will be consumed)
+</ParamField>
+
+<ParamField path="deadline" type="uint256">
+  Deadline (must not have passed)
+</ParamField>
+
+**Access:** Anyone if the hooks have been pre-signed by the admin
+
+**Requirements:**
+- Hooks must be pre-signed via `preSignHooks()`
+- Deadline must not have passed
+- Nonce must not have been used
+
+**See also:** `ICOWAuthHook.sol:49`
+
+---
+
+## Integration Examples
+
+### Signature-Based Execution
+
+```solidity
+// Prepare calls
+Call[] memory calls = new Call[](2);
+calls[0] = Call({
+    target: address(token),
+    value: 0,
+    callData: abi.encodeCall(IERC20.approve, (spender, type(uint256).max)),
+    allowFailure: false,
+    isDelegateCall: false
+});
+calls[1] = Call({
+    target: address(dex),
+    value: 0,
+    callData: abi.encodeCall(IDex.swap, (params)),
+    allowFailure: false,
+    isDelegateCall: false
+});
+
+bytes32 nonce = keccak256(abi.encodePacked(block.timestamp, userSalt));
+uint256 deadline = block.timestamp + 30 minutes;
+
+// User signs off-chain
+bytes memory signature = signExecuteHooks(calls, nonce, deadline);
+
+// Execute through implementation
+ICOWAuthHook(cowshed).executeHooks(calls, nonce, deadline, signature);
+```
+
+### Pre-Signing Pattern
+
+```solidity
+// Admin pre-signs on-chain (can be done in advance)
+ICOWAuthHook(cowshed).preSignHooks(calls, nonce, deadline, true);
+
+// Later, anyone can execute (gasless for admin)
+ICOWAuthHook(cowshed).executePreSignedHooks(calls, nonce, deadline);
+
+// Admin can revoke before execution
+ICOWAuthHook(cowshed).preSignHooks(calls, nonce, deadline, false);
+```
+
+### Trusted Execution
+
+```solidity
+// Factory or admin can execute without signature
+ICOWAuthHook(cowshed).trustedExecuteHooks(calls);
+```
+
+---
+
+## Design Patterns
+
+<Expandable title="Signature vs Pre-Signing vs Trusted">
+
+**executeHooks (Signature-based):**
+- Requires off-chain signature from admin
+- Anyone can submit with valid signature
+- Most flexible - can be signed offline
+- Gas: Admin doesn't pay for execution
+
+**executePreSignedHooks (Pre-signing):**
+- Admin signs on-chain in advance
+- Anyone can execute after pre-signing
+- Useful for scheduled/delegated execution
+- Gas: Admin pays for pre-signing, executor pays for execution
+
+**trustedExecuteHooks (Trusted):**
+- No signature required
+- Only factory/admin can call
+- Used for immediate execution by trusted party
+- Gas: Trusted executor pays
+
+</Expandable>
+
+<Expandable title="Nonce Management">
+
+Nonces in ICOWAuthHook are single-use bytes32 values:
+
+- **Not sequential**: Can be any unique bytes32 value
+- **Replay protection**: Each nonce can only be used once
+- **Parallel execution**: Multiple pending hooks with different nonces
+- **Admin revocation**: Admin can revoke nonces before use
+
+**Best Practices:**
+```solidity
+// Include context in nonce for debugging
+bytes32 nonce = keccak256(abi.encodePacked(
+    "approve-swap",
+    block.timestamp,
+    userEntropy
+));
+
+// Check if nonce is used
+bool used = COWShed(cowshed).nonces(nonce);
+
+// Admin can revoke proactively
+COWShed(cowshed).revokeNonce(nonce);
+```
+
+</Expandable>
+
+<Expandable title="Deadline Management">
+
+Deadlines prevent signatures from being valid indefinitely:
+
+- **Unix timestamp**: Seconds since epoch
+- **Checked on execution**: Reverts if `block.timestamp > deadline`
+- **No automatic expiration**: Nonce is only consumed on execution
+
+**Best Practices:**
+```solidity
+// Short deadline for time-sensitive operations
+uint256 deadline = block.timestamp + 5 minutes;
+
+// Longer deadline for user convenience
+uint256 deadline = block.timestamp + 1 days;
+
+// Deadline can be far future for persistent pre-signatures
+uint256 deadline = type(uint256).max; // Never expires (use with caution)
+```
+
+</Expandable>
+
+---
+
+## Security Considerations
+
+<Warning>
+  **Delegate Calls**: Setting `isDelegateCall = true` allows the call to modify the COWShed proxy's storage. Only use this for trusted contracts or you risk corrupting the proxy state.
+</Warning>
+
+<Warning>
+  **Allow Failure**: Using `allowFailure = true` means a call can silently fail. Ensure this is intentional and doesn't leave the system in an inconsistent state.
+</Warning>
+
+<Note>
+  **Signature Verification**: All signatures are verified using EIP-712, which prevents signature replay across different chains and contracts.
+</Note>
+
+<Note>
+  **Nonce Uniqueness**: Always use unique nonces. Reusing nonces will cause the transaction to revert with `NonceAlreadyUsed()`.
+</Note>

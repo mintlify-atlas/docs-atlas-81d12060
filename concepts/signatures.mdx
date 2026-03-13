@@ -1,0 +1,387 @@
+---
+title: 'Signatures'
+description: 'EIP-712 signatures for authenticated hook execution'
+---
+
+## Overview
+
+COW Shed uses **EIP-712** typed structured data signatures to authenticate hook execution. This ensures that only the COWShed owner (or authorized signers) can execute arbitrary calls through the contract.
+
+Signatures can come from two sources:
+1. **EOA (Externally Owned Account)**: Traditional wallet signatures (65 bytes, r+s+v format)
+2. **Smart Contract Wallets**: EIP-1271 signature validation
+
+## EIP-712 Structure
+
+### Domain Separator
+
+The domain separator uniquely identifies your COWShed instance and prevents cross-chain or cross-contract replay attacks.
+
+From `COWShed.sol:152-157`:
+
+```solidity COWShed.sol
+function domainSeparator() public view returns (bytes32) {
+    string memory name = "COWShed";
+    return keccak256(
+        abi.encode(domainTypeHash, keccak256(bytes(name)), keccak256(bytes(VERSION)), block.chainid, address(this))
+    );
+}
+```
+
+Where:
+- `name`: Always `"COWShed"`
+- `VERSION`: Current version `"2.1.0"` (from `COWShed.sol:23`)
+- `chainId`: The blockchain's chain ID (e.g., `1` for Ethereum mainnet)
+- `verifyingContract`: The address of your specific COWShed instance
+
+The `domainTypeHash` is defined as:
+
+```solidity COWShed.sol
+bytes32 internal constant domainTypeHash =
+    keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+```
+
+### Message Type: ExecuteHooks
+
+The primary message type for hook execution is `ExecuteHooks`, defined in `LibAuthenticatedHooks.sol:17-19`:
+
+```solidity LibAuthenticatedHooks.sol
+bytes32 internal constant EXECUTE_HOOKS_TYPE_HASH = keccak256(
+    "ExecuteHooks(Call[] calls,bytes32 nonce,uint256 deadline)Call(address target,uint256 value,bytes callData,bool allowFailure,bool isDelegateCall)"
+);
+```
+
+### Call Type Hash
+
+Each individual `Call` struct is hashed using its own typehash from `LibAuthenticatedHooks.sol:14-15`:
+
+```solidity LibAuthenticatedHooks.sol
+bytes32 internal constant CALL_TYPE_HASH =
+    keccak256("Call(address target,uint256 value,bytes callData,bool allowFailure,bool isDelegateCall)");
+```
+
+## Signature Verification Flow
+
+The complete authentication flow from `LibAuthenticatedHooks.authenticateHooks()` (lines 31-53):
+
+```solidity LibAuthenticatedHooks.sol
+function authenticateHooks(
+    Call[] calldata calls,
+    bytes32 nonce,
+    uint256 deadline,
+    address user,
+    bytes calldata signature,
+    bytes32 domainSeparator
+) internal view returns (bool) {
+    verifyDeadline(deadline);
+    bytes32 toSign = hashToSign(calls, nonce, deadline, domainSeparator);
+
+    // Smart contract signer
+    if (user.code.length > 0) {
+        bool isAuthorized = IERC1271(user).isValidSignature(toSign, signature) == MAGIC_VALUE_1271;
+        return (isAuthorized);
+    }
+    // EOA signer
+    else {
+        (bytes32 r, bytes32 s, uint8 v) = decodeEOASignature(signature);
+        address recovered = ECDSA.recover(toSign, v, r, s);
+        return user == recovered;
+    }
+}
+```
+
+### Step-by-Step Verification
+
+1. **Deadline Check**: Reverts if `block.timestamp > deadline`
+2. **Hash Construction**: Creates the EIP-712 digest to sign
+3. **Signer Type Detection**:
+   - If `user.code.length > 0`: Smart contract (use EIP-1271)
+   - Otherwise: EOA (use ECDSA recovery)
+4. **Signature Validation**:
+   - **Smart contracts**: Call `isValidSignature()` and expect `0x1626ba7e`
+   - **EOAs**: Recover signer address from signature and compare
+
+## EOA Signatures
+
+### Signature Format
+
+EOA signatures are **exactly 65 bytes** in `<r><s><v>` format:
+
+```solidity LibAuthenticatedHooks.sol
+function decodeEOASignature(bytes calldata signature) 
+    internal pure 
+    returns (bytes32 r, bytes32 s, uint8 v) 
+{
+    if (signature.length != 65) {
+        revert InvalidSignature();
+    }
+    uint256 mask = 0xff;
+    assembly ("memory-safe") {
+        r := calldataload(signature.offset)
+        s := calldataload(add(signature.offset, 0x20))
+        v := and(calldataload(add(signature.offset, 0x21)), mask)
+    }
+}
+```
+
+- **r** (bytes 0-31): First 32 bytes of ECDSA signature
+- **s** (bytes 32-63): Second 32 bytes of ECDSA signature  
+- **v** (byte 64): Recovery identifier (27 or 28)
+
+### Signing with TypeScript/viem
+
+```typescript
+import { signTypedData } from 'viem/accounts';
+
+const signature = await signTypedData({
+  account,
+  domain: {
+    name: 'COWShed',
+    version: '2.1.0',
+    chainId: 1,
+    verifyingContract: cowShedAddress
+  },
+  types: {
+    ExecuteHooks: [
+      { name: 'calls', type: 'Call[]' },
+      { name: 'nonce', type: 'bytes32' },
+      { name: 'deadline', type: 'uint256' }
+    ],
+    Call: [
+      { name: 'target', type: 'address' },
+      { name: 'value', type: 'uint256' },
+      { name: 'callData', type: 'bytes' },
+      { name: 'allowFailure', type: 'bool' },
+      { name: 'isDelegateCall', type: 'bool' }
+    ]
+  },
+  primaryType: 'ExecuteHooks',
+  message: {
+    calls: callsArray,
+    nonce: nonceBytes32,
+    deadline: deadlineTimestamp
+  }
+});
+
+// signature is now 65 bytes: 0x<r><s><v>
+```
+
+### Signing with ethers.js
+
+```typescript
+import { TypedDataDomain, TypedDataField } from 'ethers';
+
+const domain: TypedDataDomain = {
+  name: 'COWShed',
+  version: '2.1.0',
+  chainId: 1,
+  verifyingContract: cowShedAddress
+};
+
+const types: Record<string, TypedDataField[]> = {
+  ExecuteHooks: [
+    { name: 'calls', type: 'Call[]' },
+    { name: 'nonce', type: 'bytes32' },
+    { name: 'deadline', type: 'uint256' }
+  ],
+  Call: [
+    { name: 'target', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'callData', type: 'bytes' },
+    { name: 'allowFailure', type: 'bool' },
+    { name: 'isDelegateCall', type: 'bool' }
+  ]
+};
+
+const signature = await signer.signTypedData(domain, types, {
+  calls: callsArray,
+  nonce: nonceBytes32,
+  deadline: deadlineTimestamp
+});
+```
+
+## EIP-1271 Smart Contract Signatures
+
+For smart contract wallets (Safe, Argent, etc.), COW Shed uses **EIP-1271** signature validation.
+
+### Magic Value
+
+The expected return value for valid signatures from `LibAuthenticatedHooks.sol:21`:
+
+```solidity
+bytes4 internal constant MAGIC_VALUE_1271 = 0x1626ba7e;
+```
+
+### Validation Process
+
+From `LibAuthenticatedHooks.sol:43-46`:
+
+```solidity
+if (user.code.length > 0) {
+    bool isAuthorized = IERC1271(user).isValidSignature(toSign, signature) == MAGIC_VALUE_1271;
+    return (isAuthorized);
+}
+```
+
+The contract:
+1. Detects the user address has bytecode (is a contract)
+2. Calls `isValidSignature(bytes32 hash, bytes calldata signature)`
+3. Expects return value `0x1626ba7e` for valid signatures
+
+### Safe Wallet Example
+
+For a Safe (formerly Gnosis Safe):
+
+```typescript
+import Safe from '@safe-global/protocol-kit';
+
+// Create the EIP-712 hash
+const messageHash = /* construct ExecuteHooks hash */;
+
+// Safe owners sign the hash
+const safeSignature = await safe.signHash(messageHash);
+
+// Use safeSignature.data as the signature parameter
+await cowShed.executeHooks(calls, nonce, deadline, safeSignature.data);
+```
+
+## Hash Construction
+
+The complete hash construction from `LibAuthenticatedHooks.hashToSign()` (lines 56-75):
+
+```solidity LibAuthenticatedHooks.sol
+function hashToSign(
+    Call[] calldata calls, 
+    bytes32 nonce, 
+    uint256 deadline, 
+    bytes32 domainSeparator
+) internal pure returns (bytes32 _toSign) {
+    bytes32 messageHash = executeHooksMessageHash(calls, nonce, deadline);
+
+    assembly {
+        let freeMemoryPointer := mload(0x40)
+
+        mstore(0x00, 0x1901)
+        mstore(0x20, domainSeparator)
+        mstore(0x40, messageHash)
+
+        _toSign := keccak256(0x1e, 0x42)
+
+        // Restore free memory pointer
+        mstore(0x40, freeMemoryPointer)
+    }
+}
+```
+
+This follows the EIP-712 standard: `keccak256("\x19\x01" || domainSeparator || messageHash)`
+
+### Message Hash Construction
+
+From `LibAuthenticatedHooks.executeHooksMessageHash()` (lines 78-99):
+
+```solidity
+function executeHooksMessageHash(
+    Call[] calldata calls, 
+    bytes32 nonce, 
+    uint256 deadline
+) internal pure returns (bytes32 hash) {
+    bytes32 callshash = callsHash(calls);
+    bytes32 executeHooksTypeHash = EXECUTE_HOOKS_TYPE_HASH;
+
+    assembly {
+        let before := mload(0x40)
+        mstore(0x00, executeHooksTypeHash)
+        mstore(0x20, callshash)
+        mstore(0x40, nonce)
+        mstore(0x60, deadline)
+        hash := keccak256(0x00, 0x80)
+
+        // Restore free memory pointer
+        mstore(0x40, before)
+        // Restore the zero slot
+        mstore(0x60, 0)
+    }
+}
+```
+
+The hash encodes: `keccak256(typeHash || keccak256(calls) || nonce || deadline)`
+
+## Deadline Management
+
+Every signature includes a `deadline` timestamp (Unix timestamp in seconds).
+
+From `LibAuthenticatedHooks.sol:24-28`:
+
+```solidity
+function verifyDeadline(uint256 deadline) internal view {
+    if (block.timestamp > deadline) {
+        revert DeadlineElapsed();
+    }
+}
+```
+
+<Warning>
+Deadlines are checked with `>` not `>=`. A deadline of `1234567890` is valid when `block.timestamp == 1234567890` but invalid at `1234567891`.
+</Warning>
+
+<Tip>
+Set reasonable deadlines (e.g., 1-24 hours from now) to prevent signature replay in case of nonce management issues.
+</Tip>
+
+## Security Best Practices
+
+<Warning>
+**Never Reuse Signatures**: Each signature is tied to a specific nonce. Once executed, the nonce is consumed and the signature cannot be replayed.
+</Warning>
+
+<Warning>
+**Verify Domain Separator**: Always construct signatures with the correct COWShed address and chain ID. Cross-contract replay is prevented by the domain separator.
+</Warning>
+
+<Info>
+**Smart Contract Signers**: EIP-1271 validation is only as secure as the smart contract wallet's implementation. Use well-audited wallets like Safe.
+</Info>
+
+<Tip>
+**Test Signatures Off-Chain**: Before broadcasting, verify your signature locally using `eth_call` to `executeHooks` to catch issues early.
+</Tip>
+
+## Common Errors
+
+<AccordionGroup>
+  <Accordion title="InvalidSignature">
+    The signature doesn't match the expected signer (COWShed admin). Causes:
+    - Wrong private key used to sign
+    - Incorrect domain separator (wrong chain, version, or contract address)
+    - Mismatched message data (calls, nonce, or deadline changed)
+    - Invalid r, s, v values
+  </Accordion>
+
+  <Accordion title="DeadlineElapsed">
+    The current `block.timestamp` is greater than the signature's `deadline`. The signature has expired.
+  </Accordion>
+
+  <Accordion title="NonceAlreadyUsed">
+    The nonce has already been consumed by a previous transaction. Each nonce can only be used once.
+  </Accordion>
+</AccordionGroup>
+
+## Related Concepts
+
+<CardGroup cols={2}>
+  <Card title="Hooks" icon="link" href="/concepts/hooks">
+    Understand the Call struct and hook execution
+  </Card>
+  
+  <Card title="Nonces" icon="hashtag" href="/concepts/nonces">
+    Learn about nonce management and replay protection
+  </Card>
+  
+  <Card title="Pre-Signing" icon="file-signature" href="/concepts/presigning">
+    Alternative to off-chain signatures
+  </Card>
+  
+  <Card title="executeHooks" icon="code" href="/api/cowshed">
+    API reference for executing signed hooks
+  </Card>
+</CardGroup>

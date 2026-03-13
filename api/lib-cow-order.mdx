@@ -1,0 +1,216 @@
+---
+title: "LibCowOrder"
+description: "Library for encoding and hashing CoW Protocol (Gnosis Protocol v2) orders"
+---
+
+# LibCowOrder
+
+The `LibCowOrder` library provides utilities for working with CoW Protocol (Gnosis Protocol v2) orders. It implements EIP-712 typed data hashing for order structures to enable secure off-chain order signing.
+
+## Order Structure
+
+### Data
+
+```solidity
+struct Data {
+    IERC20 sellToken;
+    IERC20 buyToken;
+    address receiver;
+    uint256 sellAmount;
+    uint256 buyAmount;
+    uint32 validTo;
+    bytes32 appData;
+    uint256 feeAmount;
+    bytes32 kind;
+    bool partiallyFillable;
+    bytes32 sellTokenBalance;
+    bytes32 buyTokenBalance;
+}
+```
+
+Complete data structure for a Gnosis Protocol order containing all parameters that are signed for submitting to CoW Protocol.
+
+<ParamField path="sellToken" type="IERC20">
+  Address of the token being sold
+</ParamField>
+
+<ParamField path="buyToken" type="IERC20">
+  Address of the token being bought
+</ParamField>
+
+<ParamField path="receiver" type="address">
+  Address that will receive the bought tokens
+</ParamField>
+
+<ParamField path="sellAmount" type="uint256">
+  Amount of sell token to be sold
+</ParamField>
+
+<ParamField path="buyAmount" type="uint256">
+  Minimum amount of buy token to be bought
+</ParamField>
+
+<ParamField path="validTo" type="uint32">
+  Unix timestamp until which the order is valid
+</ParamField>
+
+<ParamField path="appData" type="bytes32">
+  Application-specific data (e.g., for order metadata or routing information)
+</ParamField>
+
+<ParamField path="feeAmount" type="uint256">
+  Fee amount in sell token
+</ParamField>
+
+<ParamField path="kind" type="bytes32">
+  Order kind: "sell" for sell orders or "buy" for buy orders
+</ParamField>
+
+<ParamField path="partiallyFillable" type="bool">
+  Whether the order can be partially filled
+</ParamField>
+
+<ParamField path="sellTokenBalance" type="bytes32">
+  How to source the sell token: "erc20" for standard ERC20 transfer or "external" for external sources
+</ParamField>
+
+<ParamField path="buyTokenBalance" type="bytes32">
+  Where to transfer buy tokens: "erc20" for standard ERC20 transfer or "internal" for internal balances
+</ParamField>
+
+## Constants
+
+### TYPE_HASH
+
+```solidity
+bytes32 internal constant TYPE_HASH = 
+    hex"d5a25ba2e97094ad7d83dc28a6572da797d6b3e7fc6663bd93efb789fc17e489";
+```
+
+EIP-712 type hash for the Order struct, computed as:
+
+```solidity
+keccak256(
+    "Order(" +
+        "address sellToken," +
+        "address buyToken," +
+        "address receiver," +
+        "uint256 sellAmount," +
+        "uint256 buyAmount," +
+        "uint32 validTo," +
+        "bytes32 appData," +
+        "uint256 feeAmount," +
+        "string kind," +
+        "bool partiallyFillable," +
+        "string sellTokenBalance," +
+        "string buyTokenBalance" +
+    ")"
+)
+```
+
+## Functions
+
+### hash
+
+```solidity
+function hash(
+    Data memory order,
+    bytes32 domainSeparator
+) internal pure returns (bytes32 orderDigest)
+```
+
+Computes the EIP-712 signing hash for a CoW Protocol order.
+
+<ParamField path="order" type="Data">
+  The order struct containing all order parameters
+</ParamField>
+
+<ParamField path="domainSeparator" type="bytes32">
+  The EIP-712 domain separator for the settlement contract
+</ParamField>
+
+<ResponseField name="orderDigest" type="bytes32">
+  The 32-byte EIP-712 signing hash formatted as `keccak256("\x19\x01" || domainSeparator || structHash)`
+</ResponseField>
+
+<Note>
+  This function uses optimized in-place assembly for computing the struct hash. The order struct has 12 fields, requiring `(1 + 12) * 32 = 416` bytes to hash including the type hash prefix.
+</Note>
+
+## Usage Example
+
+```solidity
+import {LibCowOrder} from "./LibCowOrder.sol";
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+
+contract OrderSigner {
+    bytes32 public constant DOMAIN_SEPARATOR = /* settlement contract domain separator */;
+    
+    function createOrderHash(
+        IERC20 sellToken,
+        IERC20 buyToken,
+        uint256 sellAmount,
+        uint256 buyAmount,
+        address receiver
+    ) public pure returns (bytes32) {
+        LibCowOrder.Data memory order = LibCowOrder.Data({
+            sellToken: sellToken,
+            buyToken: buyToken,
+            receiver: receiver,
+            sellAmount: sellAmount,
+            buyAmount: buyAmount,
+            validTo: uint32(block.timestamp + 1 hours),
+            appData: bytes32(0),
+            feeAmount: 0,
+            kind: keccak256("sell"),
+            partiallyFillable: false,
+            sellTokenBalance: keccak256("erc20"),
+            buyTokenBalance: keccak256("erc20")
+        });
+        
+        return LibCowOrder.hash(order, DOMAIN_SEPARATOR);
+    }
+}
+```
+
+## Integration with CoW Protocol
+
+The `LibCowOrder` library is designed to be compatible with the CoW Protocol settlement contract. When creating orders:
+
+1. **Construct the order** using the `Data` struct with all required parameters
+2. **Hash the order** using `LibCowOrder.hash()` with the settlement contract's domain separator
+3. **Sign the hash** using the trader's private key (EOA) or smart contract signature (EIP-1271)
+4. **Submit to CoW Protocol** via the API with the order data and signature
+
+<Info>
+  The domain separator should match the one used by the CoW Protocol settlement contract to ensure signature validity.
+</Info>
+
+## Order Parameters Reference
+
+### Order Kind
+
+The `kind` field should be set to:
+- `keccak256("sell")` for sell orders (sell exact amount, buy at least minimum)
+- `keccak256("buy")` for buy orders (buy exact amount, sell at most maximum)
+
+### Token Balance Methods
+
+The `sellTokenBalance` and `buyTokenBalance` fields should be set to:
+- `keccak256("erc20")` for standard ERC20 token transfers
+- `keccak256("external")` for sell tokens from external sources (e.g., Vault balances)
+- `keccak256("internal")` for buy tokens to internal balances
+
+<Note>
+  Most standard orders use `"erc20"` for both sell and buy token balances.
+</Note>
+
+## Implementation Notes
+
+<Info>
+  The `hash` function uses optimized assembly code for gas efficiency. It computes the struct hash in-place by temporarily overwriting memory before the order struct, then restores the original value.
+</Info>
+
+<Note>
+  This library is based on the official Gnosis Protocol v2 (CoW Protocol) specification and is compatible with the settlement contract's signature verification.
+</Note>

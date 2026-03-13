@@ -1,0 +1,232 @@
+---
+title: 'Deployment Guide'
+description: 'Step-by-step guide to deploying COW Shed contracts to new networks'
+icon: 'rocket'
+---
+
+This guide walks you through deploying COW Shed contracts to a new network. The deployment uses Foundry's deterministic deployment features to ensure consistent addresses across chains.
+
+## Prerequisites
+
+Before deploying, ensure you have:
+
+<Steps>
+  <Step title="Install Foundry">
+    Install Foundry (forge, cast, anvil) from [getfoundry.sh](https://getfoundry.sh)
+    
+    ```bash
+    curl -L https://foundry.paradigm.xyz | bash
+    foundryup
+    ```
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    Set up your environment variables for deployment:
+    
+    ```bash
+    export RPC_URL="https://your-rpc-endpoint.com"
+    export PK="your-private-key-here"
+    export ETHERSCAN_API_KEY="your-etherscan-api-key"  # For verification
+    ```
+
+    <Warning>
+      Never commit private keys to version control. Use environment variables or a secure key management system.
+    </Warning>
+  </Step>
+
+  <Step title="Fund Deployment Account">
+    Ensure your deployment account has sufficient native tokens to cover gas costs. Deployment involves deploying multiple contracts.
+  </Step>
+</Steps>
+
+## Foundry Configuration
+
+The project uses specific Foundry settings in `foundry.toml` to ensure deterministic deployments:
+
+```toml
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+
+# Deterministic deployment configuration
+solc = "0.8.30"
+evm_version = "prague"
+bytecode_hash = "none"
+cbor_metadata = false
+
+via_ir = true
+optimizer_runs = 1_000_000
+```
+
+<Info>
+  These settings are critical for achieving the same contract addresses across chains. Do not modify them unless you intend to deploy to different addresses.
+</Info>
+
+### Key Configuration Details
+
+- **solc version**: Locked to `0.8.30` for consistency
+- **EVM version**: Set to `prague` for latest features
+- **bytecode_hash**: Set to `none` to exclude metadata hash
+- **cbor_metadata**: Disabled for deterministic bytecode
+- **via_ir**: Enabled for better optimization
+- **optimizer_runs**: Set to `1,000,000` for production efficiency
+
+## Deployment Process
+
+<Steps>
+  <Step title="Build the Contracts">
+    Compile all contracts to ensure there are no errors:
+    
+    ```bash
+    forge build
+    ```
+    
+    This will compile all contracts and output artifacts to the `out/` directory.
+  </Step>
+
+  <Step title="Validate Deterministic Addresses">
+    Before deploying, simulate the deployment to validate the expected addresses:
+    
+    ```bash
+    forge script 'script/Deploy.s.sol:DeployScript' --sig "run()" --rpc-url "$RPC_URL" -vvvv
+    ```
+    
+    This command:
+    - Simulates deployment without broadcasting transactions
+    - Shows the expected deployment addresses
+    - Validates that contracts aren't already deployed
+    
+    <Info>
+      If the contracts are already deployed on the network, the script will revert. You can also run without `--rpc-url` to see expected addresses offline.
+    </Info>
+  </Step>
+
+  <Step title="Deploy Contracts">
+    Deploy the contracts to the network:
+    
+    ```bash
+    forge script 'script/Deploy.s.sol:DeployScript' --sig "run()" --rpc-url "$RPC_URL" -vvvv --private-key "$PK" --broadcast
+    ```
+    
+    This will deploy:
+    - **COWShed**: Main proxy implementation
+    - **COWShedForComposableCoW**: Composable CoW version
+    - **COWShedFactory**: Factory for standard proxies
+    - **COWShedFactory** (for Composable): Factory for Composable CoW proxies
+    
+    <Warning>
+      The `--broadcast` flag will actually send transactions. Double-check your RPC URL and ensure you have sufficient funds before running.
+    </Warning>
+  </Step>
+
+  <Step title="Verify Deployment">
+    After deployment, verify that the broadcast files were created:
+    
+    ```bash
+    ls -la broadcast/Deploy.s.sol/
+    ```
+    
+    You should see a subdirectory for your chain ID containing deployment artifacts.
+  </Step>
+
+  <Step title="Verify Contracts on Block Explorer">
+    Follow the [Verification Guide](/deployment/verification) to verify your deployed contracts on the block explorer.
+  </Step>
+
+  <Step title="Commit Deployment Files">
+    Commit the generated broadcast files to the repository:
+    
+    ```bash
+    git add broadcast/Deploy.s.sol/<chain-id>/
+    git commit -m "Deploy contracts to <network-name> (chain ID: <chain-id>)"
+    ```
+  </Step>
+
+  <Step title="Update networks.json">
+    Regenerate the `networks.json` file to include the new deployment:
+    
+    ```bash
+    bash dev/generate-networks-file.sh > networks.json
+    git add networks.json
+    git commit -m "Update networks.json with <network-name> deployment"
+    ```
+  </Step>
+</Steps>
+
+## Deployment Script Details
+
+The deployment script (`script/Deploy.s.sol`) uses CREATE2 with a zero salt to ensure deterministic addresses:
+
+```solidity
+bytes32 constant SALT = bytes32(0);
+
+// Deploy COWShed
+vm.broadcast();
+COWShed cowShed = new COWShed{salt: SALT}();
+
+// Deploy COWShedForComposableCoW
+IComposableCow composableCoW = IComposableCow(
+    address(vm.envOr("COMPOSABLE_COW", address(DEFAULT_COMPOSABLE_COW)))
+);
+vm.broadcast();
+COWShed cowShedForComposableCoW = new COWShedForComposableCoW{salt: SALT}(composableCoW);
+
+// Deploy factories
+vm.broadcast();
+COWShedFactory factory = new COWShedFactory{salt: SALT}(address(cowShed));
+
+vm.broadcast();
+COWShedFactory factoryForComposableCoW = new COWShedFactory{salt: SALT}(
+    address(cowShedForComposableCoW)
+);
+```
+
+### Composable CoW Configuration
+
+By default, the script uses the standard Composable CoW address (`0xfdaFc9d1902f4e0b84f65F49f244b32b31013b74`). You can override this with:
+
+```bash
+export COMPOSABLE_COW="0xYourCustomAddress"
+```
+
+## Troubleshooting
+
+### Deployment Reverts
+
+If deployment reverts, common causes include:
+
+- **Contracts already deployed**: The script checks if contracts exist at expected addresses
+- **Insufficient gas**: Increase your gas limit or ensure you have enough native tokens
+- **RPC issues**: Try a different RPC endpoint if you experience timeouts
+
+### Address Mismatch
+
+If deployed addresses don't match expected values:
+
+- Verify your `foundry.toml` matches the repository version exactly
+- Ensure you're using the correct Solidity compiler version (0.8.30)
+- Check that bytecode_hash and cbor_metadata settings are correct
+
+### Network-Specific Configuration
+
+Some networks may require additional configuration:
+
+```bash
+# For networks with custom gas settings
+forge script ... --legacy  # Use legacy transactions
+forge script ... --gas-price 1000000000  # Set specific gas price
+```
+
+## Next Steps
+
+After deployment:
+
+1. [Verify your contracts](/deployment/verification) on the block explorer
+2. Update the project documentation with new network information
+3. Test the deployment by creating a test proxy
+4. Consider deploying to a testnet first before mainnet
+
+<Info>
+  Always test deployments on testnets (like Sepolia) before deploying to mainnet networks.
+</Info>
